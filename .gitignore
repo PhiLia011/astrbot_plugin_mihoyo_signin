@@ -1,0 +1,8 @@
+﻿@# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+
+# Local data (never commit cookies/device ids)
+data/
+*.local
+

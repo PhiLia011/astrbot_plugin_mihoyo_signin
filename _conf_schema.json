@@ -1,0 +1,112 @@
+{
+  "sign_time": {
+    "description": "每日自动签到时间（24小时制，格式 HH:MM，北京时间）",
+    "type": "string",
+    "default": "00:10"
+  },
+  "push_result": {
+    "description": "自动签到完成后是否向绑定者推送结果",
+    "type": "bool",
+    "default": true
+  },
+  "games": {
+    "description": "自动签到包含的游戏（可单独开关）",
+    "type": "object",
+    "items": {
+      "hk4e_cn": {
+        "description": "原神",
+        "type": "bool",
+        "default": true
+      },
+      "hkrpg_cn": {
+        "description": "崩坏：星穹铁道",
+        "type": "bool",
+        "default": true
+      },
+      "bh3_cn": {
+        "description": "崩坏3",
+        "type": "bool",
+        "default": true
+      },
+      "nap_cn": {
+        "description": "绝区零",
+        "type": "bool",
+        "default": true
+      },
+      "bh2_cn": {
+        "description": "崩坏学园2",
+        "type": "bool",
+        "default": false
+      },
+      "nxx_cn": {
+        "description": "未定事件簿",
+        "type": "bool",
+        "default": false
+      }
+    }
+  },
+  "qr_timeout": {
+    "description": "扫码登录二维码有效时间（秒）",
+    "type": "int",
+    "default": 120
+  },
+  "api_retries": {
+    "description": "API 请求失败自动重试次数",
+    "type": "int",
+    "default": 3
+  },
+  "act_id_override": {
+    "description": "act_id 覆盖（米游社更换活动ID时使用，格式 {\"hk4e_cn\": \"新ID\"}，留空使用内置默认）",
+    "type": "object",
+    "items": {
+      "hk4e_cn": {
+        "description": "原神 act_id（留空使用默认）",
+        "type": "string",
+        "default": ""
+      },
+      "hkrpg_cn": {
+        "description": "崩坏：星穹铁道 act_id（留空使用默认）",
+        "type": "string",
+        "default": ""
+      },
+      "bh3_cn": {
+        "description": "崩坏3 act_id（留空使用默认）",
+        "type": "string",
+        "default": ""
+      },
+      "nap_cn": {
+        "description": "绝区零 act_id（留空使用默认）",
+        "type": "string",
+        "default": ""
+      },
+      "bh2_cn": {
+        "description": "崩坏学园2 act_id（留空使用默认）",
+        "type": "string",
+        "default": ""
+      },
+      "nxx_cn": {
+        "description": "未定事件簿 act_id（留空使用默认）",
+        "type": "string",
+        "default": ""
+      }
+    }
+  },
+  "ds_salt": {
+    "description": "米游社 DS 签名盐（米游社更新算法时修改）",
+    "type": "string",
+    "default": "d9200c846b10886e8c874fc33c8f308b",
+    "invisible": true
+  },
+  "app_version": {
+    "description": "x-rpc-app_version（米游社更新版本后修改）",
+    "type": "string",
+    "default": "2.109.0",
+    "invisible": true
+  },
+  "client_type": {
+    "description": "x-rpc-client_type（5=移动网页端 2=安卓端）",
+    "type": "string",
+    "default": "5",
+    "invisible": true
+  }
+}
