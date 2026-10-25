@@ -1,7 +1,7 @@
 name: astrbot_plugin_mihoyo_signin
 desc: 米游社游戏签到与战绩查询（原神/星穹铁道/绝区零等），支持扫码登录、真人验证码、角色装备与深渊查询
 help: 发送「米游社 帮助」查看使用说明
-version: v2.1.0
+version: v2.1.1
 author: Firefly
 short_desc: 米游社签到、角色装备战绩查询与真人验证码
 astrbot_version: ">=4.12"

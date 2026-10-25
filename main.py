@@ -6,7 +6,7 @@ astrbot_plugin_mihoyo_signin
 功能：
 - 「签到」/「米游社 签到」一键签到当前账号全部游戏
 - 「米游社 绑定 <cookie>」绑定米游社 Cookie
-- 「米游社 扫码」扫码登录自动绑定
+- 「米游社 登录」扫码登录并绑定账号
 - 「米游社 查询 [游戏]」查询签到状态
 - 「米游社 我的」查看所有绑定账号
 - 「米游社 切换 <序号>」切换默认账号（支持多账号）
@@ -521,7 +521,7 @@ class MihoyoSigninPlugin(Star):
                 lines.append(f"⚠️ {label} 触发验证码（1034），请先在米游社手动签到")
                 continue
             if retcode in LOGIN_INVALID_CODES:
-                return f"【{g['name']}】❌ 登录凭证已失效（{retcode}），请重新绑定或扫码登录"
+                return f"【{g['name']}】❌ 登录凭证已失效（{retcode}），请发送「米游社 登录」重新登录"
             if retcode != 0:
                 lines.append(f"❌ {label} 查询失败：{j.get('message', retcode)}")
                 continue
@@ -566,7 +566,7 @@ class MihoyoSigninPlugin(Star):
             elif rc2 == RETCODE_CAPTCHA:
                 lines.append(f"⚠️ {label} 触发验证码（1034），请先在米游社手动签到")
             elif rc2 in LOGIN_INVALID_CODES:
-                return f"【{g['name']}】❌ 登录凭证已失效（{rc2}），请重新绑定或扫码登录"
+                return f"【{g['name']}】❌ 登录凭证已失效（{rc2}），请发送「米游社 登录」重新登录"
             else:
                 lines.append(f"❌ {label} 签到失败：{j2.get('message', rc2)}")
 
@@ -663,7 +663,7 @@ class MihoyoSigninPlugin(Star):
 
                 retcode = j.get("retcode")
                 if retcode in (-3501, -3505):  # 过期 / 取消
-                    await self._send(umo, "二维码已失效或已取消，需要重新登录请再发一次「米游社 扫码」~")
+                    await self._send(umo, "二维码已失效或已取消，请重新发送「米游社 登录」~")
                     return
                 status = (j.get("data") or {}).get("status")
                 if status == "Scanned" and last_status != "Scanned":
@@ -677,12 +677,21 @@ class MihoyoSigninPlugin(Star):
                     cookie = await self._complete_cookie(cookie)
                     ok, msg, _ = await self._validate_and_bind(sender, cookie, umo, device_id)
                     if ok:
-                        await self._send(umo, f"🎉 绑定成功！{msg}\n之后每天会自动签到，也可以直接发送「签到」一键签到~")
+                        await self._send(
+                            umo,
+                            "✅ 登录成功，Cookie 已保存。\n"
+                            f"{msg}\n"
+                            "自动签到已开启；发送「签到」可立即签到。",
+                        )
                     else:
-                        await self._send(umo, f"❌ 绑定失败：{msg}\n可尝试「米游社 绑定 <cookie>」手动绑定。")
+                        await self._send(
+                            umo,
+                            f"❌ 登录失败：{msg}\n"
+                            "也可发送「米游社 绑定 <cookie>」手动绑定。",
+                        )
                     return
                 last_status = status
-            await self._send(umo, "⏰ 二维码已过期，需要重新登录请再发一次「米游社 扫码」~")
+            await self._send(umo, "⏰ 二维码已过期，请重新发送「米游社 登录」~")
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -736,7 +745,12 @@ class MihoyoSigninPlugin(Star):
                 user["active_index"] = i
                 await self.store.save()
                 games_str = "、".join(GAMES[b]["name"] for b in roles)
-                return True, f"已更新账号 {bbs_uid}（{first_role.get('nickname', '')}），识别游戏：{games_str}", i
+                return (
+                    True,
+                    f"账号：{bbs_uid}（{first_role.get('nickname', '')}）\n"
+                    f"识别游戏：{games_str}",
+                    i,
+                )
 
         acc = {
             "cookie": cookie,
@@ -751,9 +765,12 @@ class MihoyoSigninPlugin(Star):
         await self.store.save()
         games_str = "、".join(GAMES[b]["name"] for b in roles)
         n = len(user["accounts"])
-        msg = f"米游社账号 {bbs_uid}（{first_role.get('nickname', '')}），识别游戏：{games_str}"
+        msg = (
+            f"账号：{bbs_uid}（{first_role.get('nickname', '')}）\n"
+            f"识别游戏：{games_str}"
+        )
         if n > 1:
-            msg += f"；当前共 {n} 个账号，已切换到新账号（发送「米游社 切换 <序号>」可切换）"
+            msg += f"\n当前共 {n} 个米游社账号，已切换到该账号。"
         return True, msg, user["active_index"]
 
     # --------------------------------------------------------
@@ -1141,13 +1158,13 @@ class MihoyoSigninPlugin(Star):
             "「米游社」每日签到插件使用说明\n"
             "——————————————\n"
             "📌 绑定方式（二选一）：\n"
-            "1. 扫码登录：发送「米游社 扫码」\n"
+            "1. 扫码登录：发送「米游社 登录」\n"
             "2. Cookie 绑定：发送「米游社 绑定 <cookie>」\n"
             "   （浏览器登录 user.mihoyo.com 后 F12 → Console 输入 document.cookie 复制）\n"
             "——————————————\n"
             "📌 常用指令：\n"
             "· 签到 —— 一键签到当前账号的全部游戏\n"
-            "· 米游社 扫码 —— 扫码登录自动绑定\n"
+            "· 米游社 登录 —— 扫码登录并绑定账号\n"
             "· 米游社 绑定 <cookie> —— 绑定 Cookie\n"
             "· 米游社 签到 [游戏] —— 指定游戏签到（原神/崩铁/崩坏3/绝区零/崩坏2/未定）\n"
             "· 米游社 查询 [游戏] —— 查询本月签到状态\n"
@@ -1176,7 +1193,7 @@ class MihoyoSigninPlugin(Star):
         sender = event.get_sender_id()
         acc = self._active_account(sender)
         if not acc:
-            yield event.plain_result("你还没有绑定米游社账号哦~ 发送「米游社 扫码」或「米游社 绑定 <cookie>」即可绑定")
+            yield event.plain_result("你还没有绑定米游社账号哦~ 发送「米游社 登录」或「米游社 绑定 <cookie>」即可绑定")
             event.stop_event()
             return
         game = self._parse_game_from_msg(event.message_str, "签到")
@@ -1199,9 +1216,9 @@ class MihoyoSigninPlugin(Star):
         yield event.plain_result(prefix + "\n".join(lines))
         event.stop_event()
 
-    @mihoyo.command("扫码", priority=10)
+    @mihoyo.command("登录", priority=10)
     async def qr_login(self, event: AstrMessageEvent):
-        '''扫码登录绑定米游社账号'''
+        '''扫码登录并绑定米游社账号'''
         sender = event.get_sender_id()
         task = self._qr_tasks.get(sender)
         if task and not task.done():
@@ -1242,7 +1259,10 @@ class MihoyoSigninPlugin(Star):
 
         yield event.chain_result([
             Comp.Image.fromFileSystem(img_path),
-            Comp.Plain(f"请用米游社 App 扫描上方二维码登录（{timeout} 秒内有效），扫码确认后自动绑定~"),
+            Comp.Plain(
+                f"请使用米游社 App 扫描上方二维码（{timeout} 秒内有效），"
+                "确认后自动登录并保存账号。"
+            ),
         ])
         event.stop_event()
 
@@ -1266,7 +1286,12 @@ class MihoyoSigninPlugin(Star):
         sender = event.get_sender_id()
         ok, msg, _ = await self._validate_and_bind(sender, text, event.unified_msg_origin)
         if ok:
-            yield event.plain_result(f"✅ 绑定成功！{msg}\n之后每天 {self.config.get('sign_time', '00:10')} 自动签到，也可以直接发送「签到」一键签到~")
+            yield event.plain_result(
+                "✅ 登录成功，Cookie 已保存。\n"
+                f"{msg}\n"
+                f"每天 {self.config.get('sign_time', '00:10')} 自动签到；"
+                "发送「签到」可立即签到。"
+            )
         else:
             yield event.plain_result(f"❌ 绑定失败：{msg}")
         event.stop_event()
@@ -1277,7 +1302,7 @@ class MihoyoSigninPlugin(Star):
         sender = event.get_sender_id()
         acc = self._active_account(sender)
         if not acc:
-            yield event.plain_result("你还没有绑定米游社账号哦~ 发送「米游社 扫码」或「米游社 绑定 <cookie>」即可绑定")
+            yield event.plain_result("你还没有绑定米游社账号哦~ 发送「米游社 登录」或「米游社 绑定 <cookie>」即可绑定")
             event.stop_event()
             return
         game = self._parse_game_from_msg(event.message_str, "签到")
@@ -1306,7 +1331,7 @@ class MihoyoSigninPlugin(Star):
         sender = event.get_sender_id()
         acc = self._active_account(sender)
         if not acc:
-            yield event.plain_result("你还没有绑定米游社账号哦~ 发送「米游社 扫码」或「米游社 绑定 <cookie>」即可绑定")
+            yield event.plain_result("你还没有绑定米游社账号哦~ 发送「米游社 登录」或「米游社 绑定 <cookie>」即可绑定")
             event.stop_event()
             return
         game = self._parse_game_from_msg(event.message_str, "查询")
@@ -1367,7 +1392,7 @@ class MihoyoSigninPlugin(Star):
         account = self._active_account(sender)
         if not account:
             yield event.plain_result(
-                "你还没有绑定米游社账号哦~ 请先发送「米游社 扫码」"
+                "你还没有绑定米游社账号哦~ 请先发送「米游社 登录」"
             )
             event.stop_event()
             return
