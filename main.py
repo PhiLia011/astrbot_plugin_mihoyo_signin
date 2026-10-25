@@ -24,7 +24,7 @@ import random
 import string
 import time
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -40,12 +40,18 @@ from astrbot.api.star import Context, Star, StarTools
 # 游戏信息: game_biz -> (游戏名, act_id, API 根地址, 签到路径)
 # act_id 为 2024 年 6 月后国服通用版本
 GAMES = {
-    "hk4e_cn": {"name": "原神", "act_id": "e202311201442471", "api": "https://api-takumi.mihoyo.com", "path": "luna"},
-    "hkrpg_cn": {"name": "崩坏：星穹铁道", "act_id": "e202304121516551", "api": "https://api-takumi.mihoyo.com", "path": "luna"},
-    "bh3_cn": {"name": "崩坏3", "act_id": "e202306201626331", "api": "https://api-takumi.mihoyo.com", "path": "luna"},
-    "nap_cn": {"name": "绝区零", "act_id": "e202406242138391", "api": "https://act-nap-api.mihoyo.com", "path": "luna/zzz"},
-    "bh2_cn": {"name": "崩坏学园2", "act_id": "e202203291431091", "api": "https://api-takumi.mihoyo.com", "path": "luna"},
-    "nxx_cn": {"name": "未定事件簿", "act_id": "e202202251749321", "api": "https://api-takumi.mihoyo.com", "path": "luna"},
+    "hk4e_cn": {"name": "原神", "act_id": "e202311201442471", "api": "https://api-takumi.mihoyo.com",
+                "path": "luna", "signgame": "hk4e"},
+    "hkrpg_cn": {"name": "崩坏：星穹铁道", "act_id": "e202304121516551", "api": "https://api-takumi.mihoyo.com",
+                 "path": "luna"},
+    "bh3_cn": {"name": "崩坏3", "act_id": "e202306201626331", "api": "https://api-takumi.mihoyo.com",
+               "path": "luna"},
+    "nap_cn": {"name": "绝区零", "act_id": "e202406242138391", "api": "https://act-nap-api.mihoyo.com",
+               "path": "luna/zzz", "signgame": "zzz"},
+    "bh2_cn": {"name": "崩坏学园2", "act_id": "e202203291431091", "api": "https://api-takumi.mihoyo.com",
+               "path": "luna"},
+    "nxx_cn": {"name": "未定事件簿", "act_id": "e202202251749321", "api": "https://api-takumi.mihoyo.com",
+               "path": "luna"},
 }
 
 # 游戏别名 -> game_biz
@@ -72,7 +78,10 @@ USER_AGENT = (
 )
 
 RETCODE_ALREADY_SIGNED = -5003  # 已签到
-RETCODE_LOGIN_INVALID = -101    # 登录失效
+RETCODE_RETRYABLE = -1000       # 签到接口繁忙/风控，可延迟重试
+RETCODE_CAPTCHA = 1034          # 触发验证码
+LOGIN_INVALID_CODES = (-100, -101, 1008, 10001, 10103, 10104)
+BJT = timezone(timedelta(hours=8))
 
 
 # ============================================================
@@ -111,6 +120,38 @@ def _assemble_cookie(set_cookies) -> str:
             k, v = first.split("=", 1)
             parts[k.strip()] = v.strip()
     return "; ".join(f"{k}={v}" for k, v in parts.items())
+
+
+def _as_role_list(role_data) -> list:
+    """兼容旧版单角色 dict 与新版多角色 list 的存储格式。"""
+    if isinstance(role_data, dict):
+        return [role_data]
+    if isinstance(role_data, list):
+        return [role for role in role_data if isinstance(role, dict)]
+    return []
+
+
+def _is_today_signed(info: dict) -> bool:
+    """优先使用 is_sign；字段缺失时不能用 sign_cnt_missing=0 猜成已签到。"""
+    if not isinstance(info, dict):
+        return False
+    is_sign = info.get("is_sign")
+    if isinstance(is_sign, str):
+        normalized = is_sign.strip().lower()
+        if normalized in ("true", "1", "yes"):
+            return True
+        if normalized in ("false", "0", "no"):
+            return False
+    elif is_sign is not None:
+        return bool(is_sign)
+
+    missing = info.get("sign_cnt_missing")
+    if missing is None:
+        return False
+    try:
+        return int(missing) == 0
+    except (TypeError, ValueError):
+        return False
 
 
 # ============================================================
@@ -250,21 +291,27 @@ class MihoyoSigninPlugin(Star):
             pass
         return d
 
-    def _headers(self, cookie: str = "", ds: bool = True) -> dict:
-        """构造米游社 API 通用请求头"""
-        ver = str(self.config.get("app_version", "2.109.0"))
+    def _headers(self, cookie: str = "", ds: bool = True, game_biz: str = None) -> dict:
+        """构造米游社 API 请求头；游戏签到使用 act 域名对应的专用请求头。"""
+        ver = str(self.config.get("app_version", "2.114.0"))
+        is_game = game_biz in GAMES
         headers = {
             "Accept": "application/json, text/plain, */*",
             "User-Agent": USER_AGENT.format(ver=ver),
             "x-rpc-app_version": ver,
             "x-rpc-client_type": str(self.config.get("client_type", "5")),
-            "Origin": "https://webstatic.mihoyo.com",
-            "Referer": "https://webstatic.mihoyo.com/",
+            "Origin": "https://act.mihoyo.com" if is_game else "https://webstatic.mihoyo.com",
+            "Referer": "https://act.mihoyo.com/" if is_game else "https://webstatic.mihoyo.com/",
             "Accept-Language": "zh-CN,en-US;q=0.8",
             "X-Requested-With": "com.mihoyo.hyperion",
             "Connection": "keep-alive",
             "x-rpc-device_id": self._device_id,
         }
+        if is_game:
+            headers["x-rpc-channel"] = "miyousheluodi"
+            signgame = GAMES[game_biz].get("signgame")
+            if signgame:
+                headers["x-rpc-signgame"] = signgame
         if cookie:
             headers["Cookie"] = cookie
         if ds:
@@ -306,30 +353,50 @@ class MihoyoSigninPlugin(Star):
     # --------------------------------------------------------
 
     async def _request(self, method: str, url: str, cookie: str = "",
-                       params: dict = None, body: dict = None) -> dict:
-        """带重试的请求封装"""
+                       params: dict = None, body: dict = None,
+                       game_biz: str = None, retry_retcodes: tuple = ()) -> dict:
+        """带网络错误、429 和指定业务码重试的请求封装。"""
         retries = max(1, int(self.config.get("api_retries", 3)))
         last_err = None
         for i in range(retries):
+            retry_delay = 1 + i
             try:
                 async with httpx.AsyncClient(timeout=20) as client:
                     resp = await client.request(
                         method, url,
                         params=params, json=body,
-                        headers=self._headers(cookie, ds=True),
+                        headers=self._headers(cookie, ds=True, game_biz=game_biz),
                     )
+                if resp.status_code == 429:
+                    last_err = "请求过于频繁（HTTP 429）"
+                    if i < retries - 1:
+                        await asyncio.sleep(5 + i * 2)
+                    continue
+                if resp.status_code >= 500:
+                    last_err = f"服务器错误（HTTP {resp.status_code}）"
+                    if i < retries - 1:
+                        await asyncio.sleep(2 + i)
+                    continue
                 try:
-                    return resp.json()
+                    payload = resp.json()
                 except Exception:
                     last_err = f"响应解析失败 (HTTP {resp.status_code})"
+                else:
+                    if not isinstance(payload, dict):
+                        last_err = f"响应格式异常 (HTTP {resp.status_code})"
+                        continue
+                    if payload.get("retcode") not in retry_retcodes:
+                        return payload
+                    last_err = payload.get("message") or f"错误码 {payload.get('retcode')}"
+                    retry_delay = 5
             except Exception as e:
                 last_err = str(e)
             if i < retries - 1:
-                await asyncio.sleep(1 + i)
+                await asyncio.sleep(retry_delay)
         raise RuntimeError(last_err or "网络请求失败")
 
     async def _get_roles(self, cookie: str, game_biz: str):
-        """获取账号在某游戏下的角色信息"""
+        """获取账号在某游戏下的全部角色信息。"""
         j = await self._request("GET", BINDING_API, cookie=cookie,
                                 params={"game_biz": game_biz})
         if j.get("retcode") != 0:
@@ -337,23 +404,22 @@ class MihoyoSigninPlugin(Star):
         lst = (j.get("data") or {}).get("list") or []
         if not lst:
             return None, "该账号没有此游戏的绑定角色"
-        r = lst[0]
-        return {
-            "game_uid": str(r.get("game_uid")),
-            "region": r.get("region"),
-            "nickname": r.get("nickname"),
-            "level": r.get("level"),
-            "region_name": r.get("region_name", ""),
-        }, None
+        return [{
+            "game_uid": str(role.get("game_uid")),
+            "region": role.get("region"),
+            "nickname": role.get("nickname"),
+            "level": role.get("level"),
+            "region_name": role.get("region_name", ""),
+        } for role in lst], None
 
     async def _fetch_all_roles(self, cookie: str) -> dict:
         """拉取账号在所有支持游戏下的角色（绑定 / 扫码时调用）"""
         roles = {}
         for biz in GAMES:
             try:
-                role, err = await self._get_roles(cookie, biz)
-                if role and not err:
-                    roles[biz] = role
+                role_list, err = await self._get_roles(cookie, biz)
+                if role_list and not err:
+                    roles[biz] = role_list
             except Exception as e:
                 logger.warning(f"拉取 {GAMES[biz]['name']} 角色失败: {e}")
         return roles
@@ -368,59 +434,96 @@ class MihoyoSigninPlugin(Star):
         )
 
     async def _sign_one(self, account: dict, game_biz: str) -> str:
-        """对单个游戏执行签到，返回结果文本"""
+        """对该游戏下的全部角色执行签到，返回结果文本。"""
         g = GAMES[game_biz]
         cookie = account.get("cookie", "")
-        role = (account.get("roles") or {}).get(game_biz)
+        roles_map = account.setdefault("roles", {})
+        role_list = _as_role_list(roles_map.get(game_biz))
 
         # 没有角色信息则实时拉取
-        if not role:
-            role, err = await self._get_roles(cookie, game_biz)
-            if not role:
+        if not role_list:
+            role_list, err = await self._get_roles(cookie, game_biz)
+            if not role_list:
                 return f"【{g['name']}】⚠️ {err}"
-            account.setdefault("roles", {})[game_biz] = role
+            roles_map[game_biz] = role_list
 
         sign_url, info_url = self._sign_urls(game_biz)
-        params = {"lang": "zh-cn", "act_id": g["act_id"],
-                  "region": role["region"], "uid": role["game_uid"]}
+        lines = []
+        for index, role in enumerate(role_list):
+            region = role.get("region") or ""
+            game_uid = str(role.get("game_uid") or "")
+            label = game_uid
+            if len(role_list) > 1:
+                label = f"{role.get('nickname') or game_uid}（{game_uid}）"
 
-        # 1. 查签到信息
-        try:
-            j = await self._request("GET", info_url, cookie=cookie, params=params)
-        except Exception as e:
-            return f"【{g['name']}】❌ 网络错误：{e}"
-        retcode = j.get("retcode")
-        if retcode == RETCODE_LOGIN_INVALID or retcode in (-100, 10001):
-            return f"【{g['name']}】❌ Cookie 已失效，请重新绑定或扫码登录"
-        if retcode != 0:
-            return f"【{g['name']}】❌ 查询失败：{j.get('message', retcode)}"
+            # 1. 查签到信息
+            try:
+                j = await self._request(
+                    "GET", info_url, cookie=cookie,
+                    params={"lang": "zh-cn", "act_id": g["act_id"],
+                            "region": region, "uid": game_uid},
+                    game_biz=game_biz, retry_retcodes=(RETCODE_RETRYABLE,))
+            except Exception as e:
+                lines.append(f"❌ {label} 网络错误：{e}")
+                continue
+            retcode = j.get("retcode")
+            if retcode == RETCODE_CAPTCHA:
+                lines.append(f"⚠️ {label} 触发验证码（1034），请先在米游社手动签到")
+                continue
+            if retcode in LOGIN_INVALID_CODES:
+                return f"【{g['name']}】❌ 登录凭证已失效（{retcode}），请重新绑定或扫码登录"
+            if retcode != 0:
+                lines.append(f"❌ {label} 查询失败：{j.get('message', retcode)}")
+                continue
 
-        info = j.get("data") or {}
-        total_sign_day = int(info.get("total_sign_day") or 0)
-        already = (int(info.get("sign_cnt_missing") or 0) == 0) or info.get("is_sign") is True
-        if already:
-            return f"【{g['name']}】✅ 今日已签到（本月累计 {total_sign_day} 天）"
+            info = j.get("data") or {}
+            if info.get("first_bind"):
+                lines.append(f"⚠️ {label} 首次绑定，请先在米游社手动签到一次")
+                continue
+            total_sign_day = int(info.get("total_sign_day") or 0)
+            if _is_today_signed(info):
+                lines.append(f"✅ {label} 今日已签到（本月累计 {total_sign_day} 天）")
+                continue
 
-        # 2. 执行签到
-        try:
-            j2 = await self._request("POST", sign_url, cookie=cookie,
-                                     body={"act_id": g["act_id"], "region": role["region"],
-                                           "uid": role["game_uid"]})
-        except Exception as e:
-            return f"【{g['name']}】❌ 网络错误：{e}"
+            # 2. 执行签到；-1000 是米游社繁忙/限流，按云崽的做法延迟后重试
+            try:
+                j2 = await self._request(
+                    "POST", sign_url, cookie=cookie,
+                    body={"lang": "zh-cn", "act_id": g["act_id"],
+                          "region": region, "uid": game_uid},
+                    game_biz=game_biz, retry_retcodes=(RETCODE_RETRYABLE,))
+            except Exception as e:
+                lines.append(f"❌ {label} 网络错误：{e}")
+                continue
 
-        rc2 = j2.get("retcode")
-        if rc2 == 0:
-            award = (j2.get("data") or {}).get("award")
-            if award:
-                name, cnt = award.get("name", "?"), award.get("cnt", 1)
-                return f"【{g['name']}】✅ 签到成功！今日奖励：「{name}」x{cnt}（本月累计 {total_sign_day + 1} 天）"
-            return f"【{g['name']}】✅ 签到成功！（本月累计 {total_sign_day + 1} 天）"
-        if rc2 == RETCODE_ALREADY_SIGNED:
-            return f"【{g['name']}】✅ 今日已签到（本月累计 {total_sign_day} 天）"
-        if rc2 == RETCODE_LOGIN_INVALID or rc2 in (-100, 10001):
-            return f"【{g['name']}】❌ Cookie 已失效，请重新绑定或扫码登录"
-        return f"【{g['name']}】❌ 签到失败：{j2.get('message', rc2)}"
+            rc2 = j2.get("retcode")
+            if rc2 == 0:
+                sign_data = j2.get("data") or {}
+                success = sign_data.get("success")
+                if success in (1, "1", True) or sign_data.get("is_risk") or sign_data.get("gt"):
+                    lines.append(f"⚠️ {label} 触发验证码/风控，本次未签到，请稍后在米游社手动签到")
+                    continue
+                award = sign_data.get("award")
+                if award:
+                    name, cnt = award.get("name", "?"), award.get("cnt", 1)
+                    lines.append(
+                        f"✅ {label} 签到成功！今日奖励：「{name}」x{cnt}"
+                        f"（本月累计 {total_sign_day + 1} 天）")
+                else:
+                    lines.append(f"✅ {label} 签到成功！（本月累计 {total_sign_day + 1} 天）")
+            elif rc2 == RETCODE_ALREADY_SIGNED:
+                lines.append(f"✅ {label} 今日已签到（本月累计 {total_sign_day} 天）")
+            elif rc2 == RETCODE_CAPTCHA:
+                lines.append(f"⚠️ {label} 触发验证码（1034），请先在米游社手动签到")
+            elif rc2 in LOGIN_INVALID_CODES:
+                return f"【{g['name']}】❌ 登录凭证已失效（{rc2}），请重新绑定或扫码登录"
+            else:
+                lines.append(f"❌ {label} 签到失败：{j2.get('message', rc2)}")
+
+            if index < len(role_list) - 1:
+                await asyncio.sleep(1)
+
+        return f"【{g['name']}】\n" + "\n".join(lines)
 
     # --------------------------------------------------------
     # 扫码登录
@@ -428,7 +531,7 @@ class MihoyoSigninPlugin(Star):
 
     async def _create_qr(self, device_id: str):
         """获取登录二维码，返回 (url, ticket)"""
-        ver = str(self.config.get("app_version", "2.109.0"))
+        ver = str(self.config.get("app_version", "2.114.0"))
         headers = {
             "x-rpc-app_id": APP_ID,
             "x-rpc-device_id": device_id,
@@ -449,7 +552,7 @@ class MihoyoSigninPlugin(Star):
 
     async def _query_qr(self, ticket: str, device_id: str):
         """查询二维码状态，返回 (json, resp)"""
-        ver = str(self.config.get("app_version", "2.109.0"))
+        ver = str(self.config.get("app_version", "2.114.0"))
         headers = {
             "x-rpc-app_id": APP_ID,
             "x-rpc-device_id": device_id,
@@ -558,7 +661,8 @@ class MihoyoSigninPlugin(Star):
         if not roles:
             return False, "Cookie 无效或账号下没有任何游戏角色（请确认 Cookie 是 user.mihoyo.com 登录后的完整 Cookie）", -1
 
-        first_role = next(iter(roles.values()))
+        first_roles = next(iter(roles.values()))
+        first_role = first_roles[0] if first_roles else {}
         bbs_uid = (_cookie_value(cookie, "ltuid") or _cookie_value(cookie, "ltuid_v2")
                    or _cookie_value(cookie, "account_id") or "")
         if not bbs_uid:
@@ -610,7 +714,7 @@ class MihoyoSigninPlugin(Star):
         """定时任务主循环：每天配置时间执行全员自动签到"""
         while True:
             try:
-                now = datetime.now()
+                now = datetime.now(BJT)
                 hm = str(self.config.get("sign_time", "00:10"))
                 try:
                     hh, mm = hm.split(":")
@@ -635,7 +739,7 @@ class MihoyoSigninPlugin(Star):
 
     async def _auto_sign_all(self):
         """为所有绑定用户的全部账号执行每日自动签到"""
-        today = date.today().isoformat()
+        today = datetime.now(BJT).date().isoformat()
         enabled = self._enabled_games()
         async with self._sign_lock:
             for sender, user in list(self.store.data.items()):
@@ -648,12 +752,13 @@ class MihoyoSigninPlugin(Star):
                     all_lines = []
                     for ai, acc in enumerate(accounts):
                         lines = []
-                        for biz in enabled:
+                        for index, biz in enumerate(enabled):
                             try:
                                 lines.append(await self._sign_one(acc, biz))
                             except Exception as e:
                                 lines.append(f"【{GAMES[biz]['name']}】❌ 出错：{e}")
-                            await asyncio.sleep(0.8)  # 轻微限速，防风控
+                            if index < len(enabled) - 1:
+                                await asyncio.sleep(1.2)  # 轻微限速，防风控
                         tag = ""
                         if len(accounts) > 1:
                             tag = f"📎 账号{ai + 1}（{acc.get('nickname', acc.get('bbs_uid', '?'))}）\n"
@@ -719,11 +824,13 @@ class MihoyoSigninPlugin(Star):
             return
         lines = []
         async with self._sign_lock:
-            for biz in games:
+            for index, biz in enumerate(games):
                 try:
                     lines.append(await self._sign_one(acc, biz))
                 except Exception as e:
                     lines.append(f"【{GAMES[biz]['name']}】❌ 出错：{e}")
+                if index < len(games) - 1:
+                    await asyncio.sleep(1.2)
             await self.store.save()
         prefix = self._account_prefix(sender)
         yield event.plain_result(prefix + "\n".join(lines))
@@ -818,11 +925,13 @@ class MihoyoSigninPlugin(Star):
             return
         lines = []
         async with self._sign_lock:
-            for biz in games:
+            for index, biz in enumerate(games):
                 try:
                     lines.append(await self._sign_one(acc, biz))
                 except Exception as e:
                     lines.append(f"【{GAMES[biz]['name']}】❌ 出错：{e}")
+                if index < len(games) - 1:
+                    await asyncio.sleep(1.2)
             await self.store.save()
         prefix = self._account_prefix(sender)
         yield event.plain_result(prefix + "\n".join(lines))
@@ -849,27 +958,41 @@ class MihoyoSigninPlugin(Star):
             lines.insert(0, prefix)
         for biz in games:
             g = GAMES[biz]
-            role = (acc.get("roles") or {}).get(biz)
+            roles_map = acc.setdefault("roles", {})
+            role_list = _as_role_list(roles_map.get(biz))
             try:
-                if not role:
-                    role, err = await self._get_roles(acc.get("cookie", ""), biz)
-                    if not role:
+                if not role_list:
+                    role_list, err = await self._get_roles(acc.get("cookie", ""), biz)
+                    if not role_list:
                         lines.append(f"· {g['name']}：{err}")
                         continue
-                    acc.setdefault("roles", {})[biz] = role
+                    roles_map[biz] = role_list
                 _, info_url = self._sign_urls(biz)
-                j = await self._request("GET", info_url, cookie=acc.get("cookie", ""),
-                                        params={"lang": "zh-cn", "act_id": g["act_id"],
-                                                "region": role["region"], "uid": role["game_uid"]})
-                if j.get("retcode") == 0:
-                    info = j.get("data") or {}
-                    total = info.get("total_sign_day") or 0
-                    is_sign = (int(info.get("sign_cnt_missing") or 0) == 0) or info.get("is_sign") is True
-                    lines.append(
-                        f"· {g['name']}（{role.get('region_name', role['region'])} · {role.get('game_uid')}）："
-                        f"本月已签 {total} 天，今日{'已签 ✅' if is_sign else '未签 ❌'}")
-                else:
-                    lines.append(f"· {g['name']}：查询失败（{j.get('message', j.get('retcode'))}）")
+                for role in role_list:
+                    j = await self._request(
+                        "GET", info_url, cookie=acc.get("cookie", ""),
+                        params={"lang": "zh-cn", "act_id": g["act_id"],
+                                "region": role.get("region") or "", "uid": role.get("game_uid")},
+                        game_biz=biz)
+                    region_name = role.get("region_name") or role.get("region") or "未知区服"
+                    label = f"· {g['name']}（{region_name} · {role.get('game_uid')}）"
+                    if j.get("retcode") == 0:
+                        info = j.get("data") or {}
+                        if info.get("first_bind"):
+                            lines.append(f"{label}：首次绑定，请先在米游社手动签到一次")
+                            continue
+                        total = info.get("total_sign_day") or 0
+                        is_sign = _is_today_signed(info)
+                        lines.append(
+                            f"{label}：本月已签 {total} 天，"
+                            f"今日{'已签 ✅' if is_sign else '未签 ❌'}")
+                    elif j.get("retcode") == RETCODE_CAPTCHA:
+                        lines.append(f"{label}：触发验证码（1034），请稍后手动查询")
+                    elif j.get("retcode") in LOGIN_INVALID_CODES:
+                        lines.append(f"{label}：登录凭证已失效，请重新绑定")
+                    else:
+                        lines.append(
+                            f"{label}：查询失败（{j.get('message', j.get('retcode'))}）")
             except Exception as e:
                 lines.append(f"· {g['name']}：出错 {e}")
         await self.store.save()
@@ -890,7 +1013,11 @@ class MihoyoSigninPlugin(Star):
         for i, acc in enumerate(accounts):
             bt = datetime.fromtimestamp(acc.get("bound_at", 0)).strftime("%Y-%m-%d %H:%M")
             roles = acc.get("roles") or {}
-            games_str = "、".join(f"{GAMES[b]['name']}（{r.get('game_uid')}）" for b, r in roles.items()) or "（无角色信息，发送「签到」可刷新）"
+            games_str = "、".join(
+                f"{GAMES[b]['name']}（{role.get('game_uid')}）"
+                for b, role_data in roles.items()
+                for role in _as_role_list(role_data)
+            ) or "（无角色信息，发送「签到」可刷新）"
             active = " ← 当前" if i == (user or {}).get("active_index", 0) else ""
             lines.append(
                 f"\n{i + 1}. UID：{acc.get('bbs_uid', '?')}（{acc.get('nickname', '?')}）{active}\n"
