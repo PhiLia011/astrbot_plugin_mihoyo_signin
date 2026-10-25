@@ -9,6 +9,33 @@
     "type": "bool",
     "default": true
   },
+  "captcha_web_enabled": {
+    "description": "启用米游社真人验证码网页",
+    "type": "bool",
+    "default": true
+  },
+  "captcha_public_base_url": {
+    "description": "验证码网页公开访问地址，例如 https://bot.example.com；留空时只生成服务器本机地址",
+    "type": "string",
+    "default": ""
+  },
+  "captcha_web_host": {
+    "description": "验证码网页监听地址",
+    "type": "string",
+    "default": "0.0.0.0",
+    "invisible": true
+  },
+  "captcha_web_port": {
+    "description": "验证码网页监听端口",
+    "type": "int",
+    "default": 6199,
+    "invisible": true
+  },
+  "captcha_ttl": {
+    "description": "验证码链接有效期（秒，60-600）",
+    "type": "int",
+    "default": 300
+  },
   "games": {
     "description": "自动签到包含的游戏（可单独开关）",
     "type": "object",

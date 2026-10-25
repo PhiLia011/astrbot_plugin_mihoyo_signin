@@ -1,9 +1,9 @@
 name: astrbot_plugin_mihoyo_signin
-desc: 米游社游戏每日签到（原神/星穹铁道/崩坏3/绝区零/崩坏2/未定事件簿），支持 Cookie 绑定与扫码登录、每日自动签到、签到状态查询
+desc: 米游社游戏签到与战绩查询（原神/星穹铁道/绝区零等），支持扫码登录、真人验证码、角色装备与深渊查询
 help: 发送「米游社 帮助」查看使用说明
-version: v2.0.1
+version: v2.1.0
 author: Firefly
-short_desc: 米游社游戏每日自动签到（扫码/Cookie 绑定）
+short_desc: 米游社签到、角色装备战绩查询与真人验证码
 astrbot_version: ">=4.12"
 support_platforms:
   - aiocqhttp

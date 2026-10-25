@@ -21,7 +21,9 @@ import hashlib
 import json
 import os
 import random
+import shlex
 import string
+import sys
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -32,6 +34,46 @@ import astrbot.api.message_components as Comp
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.star import Context, Star, StarTools
+
+try:
+    from .captcha_web import CaptchaWebServer, PendingCaptcha
+    from .game_record import (
+        CAPTCHA_RETCODES,
+        GAME_NAMES,
+        GameRecordClient,
+        GameRecordError,
+        RecordRequest,
+        find_characters,
+        format_abyss,
+        format_buddy,
+        format_character_list,
+        format_character_report,
+        format_daily_note,
+        format_profile,
+        get_character_list,
+        record_game_from_biz,
+    )
+except ImportError:
+    plugin_dir = os.path.dirname(os.path.abspath(__file__))
+    if plugin_dir not in sys.path:
+        sys.path.insert(0, plugin_dir)
+    from captcha_web import CaptchaWebServer, PendingCaptcha
+    from game_record import (
+        CAPTCHA_RETCODES,
+        GAME_NAMES,
+        GameRecordClient,
+        GameRecordError,
+        RecordRequest,
+        find_characters,
+        format_abyss,
+        format_buddy,
+        format_character_list,
+        format_character_report,
+        format_daily_note,
+        format_profile,
+        get_character_list,
+        record_game_from_biz,
+    )
 
 # ============================================================
 # 常量区
@@ -154,6 +196,13 @@ def _is_today_signed(info: dict) -> bool:
         return False
 
 
+def _character_id(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return value
+
+
 # ============================================================
 # 数据存储
 # ============================================================
@@ -213,6 +262,7 @@ class MihoyoSigninPlugin(Star):
         self._migrate_legacy_data()
         self._qr_tasks: dict = {}      # sender -> 扫码轮询任务
         self._sched_task = None        # 定时签到任务
+        self._captcha_server = None
         self._sign_lock = asyncio.Lock()
         self._device_id = self._load_device_id()
         self._apply_act_id_override()
@@ -771,6 +821,311 @@ class MihoyoSigninPlugin(Star):
             await self.store.save()
 
     # --------------------------------------------------------
+    # 战绩查询 / 真人验证码
+    # --------------------------------------------------------
+
+    async def _start_captcha_server(self):
+        if not self.config.get("captcha_web_enabled", True):
+            return
+        if self._captcha_server:
+            return
+        self._captcha_server = CaptchaWebServer(
+            host=str(self.config.get("captcha_web_host", "0.0.0.0")),
+            port=int(self.config.get("captcha_web_port", 6199)),
+            public_base_url=str(self.config.get("captcha_public_base_url", "")),
+            handler=self._captcha_solved,
+            logger=logger,
+            ttl_seconds=int(self.config.get("captcha_ttl", 300)),
+        )
+        try:
+            await self._captcha_server.start()
+        except Exception as e:
+            logger.error(f"启动米游社验证码网页失败: {e}")
+            self._captcha_server = None
+
+    def _parse_record_args(self, msg: str, command: str):
+        text = (msg or "").strip()
+        for prefix in ("/米游社", "米游社", "/mys", "mys"):
+            if text.startswith(prefix):
+                text = text[len(prefix):].strip()
+                break
+        index = text.find(command)
+        if index >= 0:
+            text = text[index + len(command):].strip()
+        try:
+            parts = shlex.split(text)
+        except ValueError:
+            parts = text.split()
+        game_biz = "hk4e_cn"
+        role_uid = ""
+        args = []
+        game_selected = False
+        for part in parts:
+            biz = GAME_ALIASES.get(part.lower())
+            if biz and not game_selected:
+                game_biz = biz
+                game_selected = True
+                continue
+            if part.isdigit() and len(part) >= 8 and not role_uid:
+                role_uid = part
+                continue
+            args.append(part)
+        return game_biz, role_uid, args
+
+    async def _get_record_role(self, account: dict, game_biz: str, role_uid: str = ""):
+        roles_map = account.setdefault("roles", {})
+        role_list = _as_role_list(roles_map.get(game_biz))
+        if not role_list:
+            role_list, err = await self._get_roles(account.get("cookie", ""), game_biz)
+            if not role_list:
+                return None, err
+            roles_map[game_biz] = role_list
+        if role_uid:
+            for role in role_list:
+                if str(role.get("game_uid")) == str(role_uid):
+                    return role, None
+            return None, f"没有找到 UID {role_uid} 的 {GAMES[game_biz]['name']}角色"
+        return role_list[0], None
+
+    def _record_client(self, account: dict) -> GameRecordClient:
+        return GameRecordClient(
+            cookie=account.get("cookie", ""),
+            device_id=account.get("device_id") or self._device_id,
+            device_fp=account.get("device_fp", ""),
+            app_version=str(self.config.get("app_version", "2.114.0")),
+            client_type=str(self.config.get("client_type", "5")),
+            retries=max(1, int(self.config.get("api_retries", 3))),
+        )
+
+    async def _fetch_record(
+        self,
+        account: dict,
+        request: RecordRequest,
+        sender: str,
+        umo: str,
+        context: dict,
+    ):
+        client = self._record_client(account)
+        try:
+            data = await client.request(request)
+        except GameRecordError as e:
+            if e.retcode not in CAPTCHA_RETCODES:
+                return None, f"❌ 查询失败：{e}"
+            if not self._captcha_server:
+                return None, (
+                    "⚠️ 米游社要求真人验证码，但验证网页未启动。"
+                    "请管理员配置 captcha_public_base_url 并重载插件。"
+                )
+            try:
+                challenge = await client.create_captcha(request, e.retcode)
+            except GameRecordError as create_error:
+                return None, f"❌ 创建验证码失败：{create_error}"
+            link = self._captcha_server.create_link(
+                challenge,
+                {
+                    "sender": sender,
+                    "umo": umo,
+                    "bbs_uid": account.get("bbs_uid", ""),
+                    "request_data": context,
+                },
+            )
+            return None, (
+                f"⚠️ 本次查询触发米游社真人验证码。\n"
+                f"请在 {getattr(self._captcha_server, 'ttl_seconds', 300) // 60 or 1} 分钟内打开：{link}\n"
+                f"完成验证后结果会自动发送到当前会话。链接仅可使用一次。"
+            )
+        finally:
+            account["device_fp"] = client.device_fp
+        return data, None
+
+    def _format_record_result(self, context: dict, data: dict) -> str:
+        game = record_game_from_biz(context["game_biz"])
+        action = context["action"]
+        if action == "profile":
+            return format_profile(game, data)
+        if action == "characters":
+            if context.get("query"):
+                return format_character_report(
+                    game,
+                    context["character"],
+                    data,
+                    context.get("mode", "character"),
+                )
+            return format_character_list(game, get_character_list(game, data))
+        if action in ("character", "weapon", "artifacts", "equipment"):
+            return format_character_report(
+                game,
+                context["character"],
+                data,
+                context.get("mode", "character"),
+            )
+        if action == "abyss":
+            return format_abyss(game, data)
+        if action == "daily_note":
+            return format_daily_note(game, data)
+        if action == "buddy":
+            return format_buddy(data)
+        return "暂不支持该战绩查询"
+
+    async def _run_record_query(
+        self,
+        sender: str,
+        umo: str,
+        account: dict,
+        game_biz: str,
+        role_uid: str,
+        action: str,
+        args: list,
+    ) -> str:
+        game = record_game_from_biz(game_biz)
+        if not game:
+            return f"{GAMES[game_biz]['name']}暂时没有开放稳定的战绩查询接口"
+        role, err = await self._get_record_role(account, game_biz, role_uid)
+        if not role:
+            return f"❌ {err}"
+        uid = str(role.get("game_uid") or "")
+        server = role.get("region") or ""
+        context = {"game_biz": game_biz, "action": action}
+
+        if action == "profile":
+            request = RecordRequest(game, "profile", uid, server)
+            context["stage"] = "final"
+            data, message = await self._fetch_record(account, request, sender, umo, context)
+            return message or self._format_record_result(context, data)
+        if action == "daily_note":
+            request = RecordRequest(game, "daily_note", uid, server)
+            context["stage"] = "final"
+            data, message = await self._fetch_record(account, request, sender, umo, context)
+            return message or self._format_record_result(context, data)
+        if action == "buddy":
+            if game != "zzz":
+                return "邦布资料仅支持绝区零"
+            request = RecordRequest(game, "buddy", uid, server)
+            context["stage"] = "final"
+            data, message = await self._fetch_record(account, request, sender, umo, context)
+            return message or self._format_record_result(context, data)
+        if action == "abyss":
+            if game == "zzz":
+                return "❌ 绝区零暂未提供稳定的官方深渊/式舆防卫战绩接口"
+            schedule_type = args[0] if args and args[0] in ("1", "2") else "1"
+            request = RecordRequest(
+                game, "abyss", uid, server,
+                query={"schedule_type": schedule_type},
+            )
+            context["stage"] = "final"
+            data, message = await self._fetch_record(account, request, sender, umo, context)
+            return message or self._format_record_result(context, data)
+
+        query = " ".join(args).strip()
+        mode = {
+            "characters": "character",
+            "character": "character",
+            "weapon": "weapon",
+            "artifacts": "artifacts",
+            "equipment": "equipment",
+        }.get(action)
+        if not mode:
+            return "暂不支持该战绩查询"
+        if action != "characters" and not query:
+            return "请指定角色名，例如：米游社 装备 胡桃"
+
+        context.update({
+            "query": query,
+            "mode": mode,
+            "stage": "characters",
+            "uid": uid,
+            "server": server,
+        })
+        request = RecordRequest(game, "characters", uid, server)
+        character_data, message = await self._fetch_record(
+            account, request, sender, umo, context,
+        )
+        if message:
+            return message
+        return await self._continue_character_query(
+            account, context, character_data, sender, umo,
+        )
+
+    async def _continue_character_query(
+        self,
+        account: dict,
+        context: dict,
+        character_data: dict,
+        sender: str,
+        umo: str,
+    ) -> str:
+        game = record_game_from_biz(context["game_biz"])
+        characters = get_character_list(game, character_data)
+        if not characters:
+            return f"没有查到{GAME_NAMES[game]}角色数据"
+        query = context.get("query", "")
+        mode = context.get("mode", "character")
+        if not query:
+            return format_character_list(game, characters)
+        matches = find_characters(characters, query)
+        if not matches:
+            return (
+                f"没有找到角色「{query}」，可先发送「米游社 角色 "
+                f"{GAMES[context['game_biz']]['name']}」查看拥有角色"
+            )
+        if len(matches) > 1:
+            return "匹配到多个角色：\n" + format_character_list(game, matches)
+        base = matches[0]
+        context["character"] = base
+        context["stage"] = "detail"
+        if game == "zzz":
+            return format_character_report(game, base, {}, mode)
+        if game == "gs":
+            detail_action = "character_detail"
+            body = {"character_ids": [_character_id(base.get("id"))]}
+            request = RecordRequest(
+                game, detail_action, context["uid"], context["server"], body=body,
+            )
+        else:
+            request = RecordRequest(
+                game, "character_detail", context["uid"], context["server"],
+                query={"need_wiki": "true"},
+            )
+        detail_data, message = await self._fetch_record(account, request, sender, umo, context)
+        return message or self._format_record_result(context, detail_data)
+
+    async def _captcha_solved(self, pending: PendingCaptcha, solved: dict):
+        context = pending.context
+        sender = context["sender"]
+        user = self.store.data.get(sender) or {}
+        account = next(
+            (
+                item for item in user.get("accounts") or []
+                if item.get("bbs_uid") == context.get("bbs_uid")
+            ),
+            self._active_account(sender),
+        )
+        if not account:
+            return False, "绑定账号已不存在，请重新查询"
+        client = self._record_client(account)
+        try:
+            data = await client.verify_captcha(pending.challenge, solved)
+            request_data = context["request_data"]
+            if request_data.get("stage") == "characters":
+                text = await self._continue_character_query(
+                    account, request_data, data, sender, context["umo"],
+                )
+            else:
+                text = self._format_record_result(request_data, data)
+            await self._send(context["umo"], text)
+            if "mihoyo/captcha/" in text:
+                return True, "验证成功，但后续查询再次要求验证；新链接已发送到机器人会话"
+            return True, "验证成功，查询结果已发送到机器人会话"
+        except GameRecordError as e:
+            return False, f"验证失败：{e}"
+        except Exception as e:
+            logger.warning(f"验证码后续查询失败: {e}")
+            return False, "验证成功但查询失败，请回到机器人重试"
+        finally:
+            account["device_fp"] = client.device_fp
+            await self.store.save()
+
+    # --------------------------------------------------------
     # 指令
     # --------------------------------------------------------
 
@@ -796,11 +1151,19 @@ class MihoyoSigninPlugin(Star):
             "· 米游社 绑定 <cookie> —— 绑定 Cookie\n"
             "· 米游社 签到 [游戏] —— 指定游戏签到（原神/崩铁/崩坏3/绝区零/崩坏2/未定）\n"
             "· 米游社 查询 [游戏] —— 查询本月签到状态\n"
+            "· 米游社 资料 [游戏] —— 账号等级、统计与探索度\n"
+            "· 米游社 角色 [游戏] [角色名] —— 角色列表或角色面板\n"
+            "· 米游社 装备 <角色名> —— 武器与圣遗物/遗器\n"
+            "· 米游社 武器 <角色名> / 圣遗物 <角色名>\n"
+            "· 米游社 深渊 [游戏] —— 原神深渊 / 星铁周期挑战\n"
+            "· 米游社 体力 [游戏] —— 原粹树脂、开拓力等实时状态\n"
+            "· 米游社 邦布 —— 绝区零邦布列表\n"
             "· 米游社 我的 —— 查看所有绑定账号\n"
             "· 米游社 切换 <序号> —— 多账号时切换默认账号\n"
             "· 米游社 解绑 [全部] —— 解绑当前账号/全部账号\n"
             "——————————————\n"
             "支持游戏：原神 / 崩坏：星穹铁道 / 崩坏3 / 绝区零 / 崩坏学园2 / 未定事件簿\n"
+            "战绩查询默认原神，可加「星铁」「绝区零」切换；多角色可加 9-10 位 UID。\n"
             "每日 {time} 自动签到（所有账号），结果自动推送~".format(
                 time=str(self.config.get("sign_time", "00:10")))
         )
@@ -999,6 +1362,77 @@ class MihoyoSigninPlugin(Star):
         yield event.plain_result("\n".join(lines))
         event.stop_event()
 
+    async def _handle_record_command(self, event: AstrMessageEvent, command: str, action: str):
+        sender = event.get_sender_id()
+        account = self._active_account(sender)
+        if not account:
+            yield event.plain_result(
+                "你还没有绑定米游社账号哦~ 请先发送「米游社 扫码」"
+            )
+            event.stop_event()
+            return
+        game_biz, role_uid, args = self._parse_record_args(event.message_str, command)
+        text = await self._run_record_query(
+            sender,
+            event.unified_msg_origin,
+            account,
+            game_biz,
+            role_uid,
+            action,
+            args,
+        )
+        await self.store.save()
+        yield event.plain_result(text)
+        event.stop_event()
+
+    @mihoyo.command("资料", alias={"战绩"}, priority=10)
+    async def record_profile(self, event: AstrMessageEvent):
+        '''查询游戏账号资料'''
+        async for result in self._handle_record_command(event, "资料", "profile"):
+            yield result
+
+    @mihoyo.command("角色", priority=10)
+    async def record_characters(self, event: AstrMessageEvent):
+        '''查询角色列表或角色详情'''
+        async for result in self._handle_record_command(event, "角色", "characters"):
+            yield result
+
+    @mihoyo.command("武器", priority=10)
+    async def record_weapon(self, event: AstrMessageEvent):
+        '''查询指定角色的武器'''
+        async for result in self._handle_record_command(event, "武器", "weapon"):
+            yield result
+
+    @mihoyo.command("圣遗物", alias={"遗器"}, priority=10)
+    async def record_artifacts(self, event: AstrMessageEvent):
+        '''查询指定角色的圣遗物或遗器'''
+        async for result in self._handle_record_command(event, "圣遗物", "artifacts"):
+            yield result
+
+    @mihoyo.command("装备", priority=10)
+    async def record_equipment(self, event: AstrMessageEvent):
+        '''查询指定角色的武器与圣遗物/遗器'''
+        async for result in self._handle_record_command(event, "装备", "equipment"):
+            yield result
+
+    @mihoyo.command("深渊", priority=10)
+    async def record_abyss(self, event: AstrMessageEvent):
+        '''查询原神深渊或星铁混沌回忆'''
+        async for result in self._handle_record_command(event, "深渊", "abyss"):
+            yield result
+
+    @mihoyo.command("体力", alias={"实时状态"}, priority=10)
+    async def record_daily_note(self, event: AstrMessageEvent):
+        '''查询树脂、开拓力等实时状态'''
+        async for result in self._handle_record_command(event, "体力", "daily_note"):
+            yield result
+
+    @mihoyo.command("邦布", priority=10)
+    async def record_buddy(self, event: AstrMessageEvent):
+        '''查询绝区零邦布'''
+        async for result in self._handle_record_command(event, "邦布", "buddy"):
+            yield result
+
     @mihoyo.command("我的", priority=10)
     async def me(self, event: AstrMessageEvent):
         '''查看所有绑定账号'''
@@ -1115,11 +1549,15 @@ class MihoyoSigninPlugin(Star):
         if self._sched_task is None or self._sched_task.done():
             self._sched_task = asyncio.create_task(self._scheduler_loop())
             logger.info("米游社签到插件：每日自动签到任务已启动")
+        await self._start_captcha_server()
 
     async def terminate(self):
         """插件卸载 / 停用时清理任务"""
         if self._sched_task:
             self._sched_task.cancel()
+        if self._captcha_server:
+            await self._captcha_server.stop()
+            self._captcha_server = None
         for t in list(self._qr_tasks.values()):
             t.cancel()
         self._qr_tasks.clear()
