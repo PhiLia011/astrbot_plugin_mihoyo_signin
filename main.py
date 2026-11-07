@@ -203,6 +203,60 @@ def _character_id(value):
         return value
 
 
+def _format_auto_sign_report(detail_blocks: list, outcomes: list) -> str:
+    """汇总自动签到结果，集中展示成功 UID，并把失败项放在末尾。"""
+
+    def outcome_label(item: dict) -> str:
+        game = item.get("game") or "未知游戏"
+        uid = str(item.get("uid") or "")
+        bbs_uid = str(item.get("bbs_uid") or "")
+        nickname = str(item.get("nickname") or "")
+        if not uid:
+            return f"{game} 米游社账号 {bbs_uid or '?'}"
+        meta = []
+        if nickname:
+            meta.append(nickname)
+        if bbs_uid:
+            meta.append(f"米游社 {bbs_uid}")
+        suffix = f"（{' / '.join(meta)}）" if meta else ""
+        return f"{game} UID {uid}{suffix}"
+
+    successful = [item for item in outcomes if item.get("success")]
+    failed = [item for item in outcomes if not item.get("success")]
+    lines = ["🕐 每日自动签到结果", ""]
+
+    if successful:
+        lines.append(f"✅ 本次签到成功 UID（{len(successful)} 个）")
+        by_game = {}
+        for item in successful:
+            by_game.setdefault(item.get("game") or "未知游戏", []).append(item)
+        for game, items in by_game.items():
+            entries = []
+            for item in items:
+                uid = str(item.get("uid") or item.get("bbs_uid") or "?")
+                nickname = str(item.get("nickname") or "")
+                bbs_uid = str(item.get("bbs_uid") or "")
+                meta = [value for value in (nickname, f"米游社 {bbs_uid}" if bbs_uid else "") if value]
+                suffix = f"（{' / '.join(meta)}）" if meta else ""
+                entries.append(f"UID {uid}{suffix}")
+            lines.append(f"· {game}：{'、'.join(entries)}")
+    else:
+        lines.append("✅ 本次签到成功 UID：无")
+
+    if detail_blocks:
+        lines.extend(["", "📋 签到明细", *detail_blocks])
+
+    lines.append("")
+    if failed:
+        lines.append(f"❌ 本次未成功 UID（{len(failed)} 个）")
+        for item in failed:
+            reason = item.get("detail") or "未知原因"
+            lines.append(f"· {outcome_label(item)}：{reason}")
+    else:
+        lines.append("❌ 本次未成功 UID：无")
+    return "\n".join(lines)
+
+
 # ============================================================
 # 数据存储
 # ============================================================
@@ -483,17 +537,44 @@ class MihoyoSigninPlugin(Star):
             f"{base}/info",
         )
 
-    async def _sign_one(self, account: dict, game_biz: str) -> str:
+    async def _sign_one(self, account: dict, game_biz: str, outcomes: list = None) -> str:
         """对该游戏下的全部角色执行签到，返回结果文本。"""
         g = GAMES[game_biz]
         cookie = account.get("cookie", "")
         roles_map = account.setdefault("roles", {})
         role_list = _as_role_list(roles_map.get(game_biz))
 
+        def record_outcome(role: dict, success: bool, detail: str):
+            if outcomes is None:
+                return
+            outcomes.append({
+                "game": g["name"],
+                "uid": str((role or {}).get("game_uid") or ""),
+                "nickname": (role or {}).get("nickname") or "",
+                "bbs_uid": account.get("bbs_uid") or "",
+                "success": success,
+                "detail": detail,
+            })
+
+        def record_login_invalid(detail: str):
+            if outcomes is None:
+                return
+            recorded_uids = {
+                item.get("uid") for item in outcomes
+                if item.get("game") == g["name"]
+                and item.get("bbs_uid") == (account.get("bbs_uid") or "")
+            }
+            for item in role_list:
+                uid = str(item.get("game_uid") or "")
+                if uid and uid in recorded_uids:
+                    continue
+                record_outcome(item, False, detail)
+
         # 没有角色信息则实时拉取
         if not role_list:
             role_list, err = await self._get_roles(cookie, game_biz)
             if not role_list:
+                record_outcome({}, False, err)
                 return f"【{g['name']}】⚠️ {err}"
             roles_map[game_biz] = role_list
 
@@ -514,24 +595,30 @@ class MihoyoSigninPlugin(Star):
                             "region": region, "uid": game_uid},
                     game_biz=game_biz, retry_retcodes=(RETCODE_RETRYABLE,))
             except Exception as e:
+                record_outcome(role, False, f"网络错误：{e}")
                 lines.append(f"❌ {label} 网络错误：{e}")
                 continue
             retcode = j.get("retcode")
             if retcode == RETCODE_CAPTCHA:
+                record_outcome(role, False, "触发验证码（1034）")
                 lines.append(f"⚠️ {label} 触发验证码（1034），请先在米游社手动签到")
                 continue
             if retcode in LOGIN_INVALID_CODES:
+                record_login_invalid(f"登录凭证已失效（{retcode}）")
                 return f"【{g['name']}】❌ 登录凭证已失效（{retcode}），请发送「米游社 登录」重新登录"
             if retcode != 0:
+                record_outcome(role, False, f"查询失败：{j.get('message', retcode)}")
                 lines.append(f"❌ {label} 查询失败：{j.get('message', retcode)}")
                 continue
 
             info = j.get("data") or {}
             if info.get("first_bind"):
+                record_outcome(role, False, "首次绑定，请先在米游社手动签到一次")
                 lines.append(f"⚠️ {label} 首次绑定，请先在米游社手动签到一次")
                 continue
             total_sign_day = int(info.get("total_sign_day") or 0)
             if _is_today_signed(info):
+                record_outcome(role, True, "今日已签到")
                 lines.append(f"✅ {label} 今日已签到（本月累计 {total_sign_day} 天）")
                 continue
 
@@ -543,6 +630,7 @@ class MihoyoSigninPlugin(Star):
                           "region": region, "uid": game_uid},
                     game_biz=game_biz, retry_retcodes=(RETCODE_RETRYABLE,))
             except Exception as e:
+                record_outcome(role, False, f"网络错误：{e}")
                 lines.append(f"❌ {label} 网络错误：{e}")
                 continue
 
@@ -551,23 +639,30 @@ class MihoyoSigninPlugin(Star):
                 sign_data = j2.get("data") or {}
                 success = sign_data.get("success")
                 if success in (1, "1", True) or sign_data.get("is_risk") or sign_data.get("gt"):
+                    record_outcome(role, False, "触发验证码/风控")
                     lines.append(f"⚠️ {label} 触发验证码/风控，本次未签到，请稍后在米游社手动签到")
                     continue
                 award = sign_data.get("award")
                 if award:
                     name, cnt = award.get("name", "?"), award.get("cnt", 1)
+                    record_outcome(role, True, "签到成功")
                     lines.append(
                         f"✅ {label} 签到成功！今日奖励：「{name}」x{cnt}"
                         f"（本月累计 {total_sign_day + 1} 天）")
                 else:
+                    record_outcome(role, True, "签到成功")
                     lines.append(f"✅ {label} 签到成功！（本月累计 {total_sign_day + 1} 天）")
             elif rc2 == RETCODE_ALREADY_SIGNED:
+                record_outcome(role, True, "今日已签到")
                 lines.append(f"✅ {label} 今日已签到（本月累计 {total_sign_day} 天）")
             elif rc2 == RETCODE_CAPTCHA:
+                record_outcome(role, False, "触发验证码（1034）")
                 lines.append(f"⚠️ {label} 触发验证码（1034），请先在米游社手动签到")
             elif rc2 in LOGIN_INVALID_CODES:
+                record_login_invalid(f"登录凭证已失效（{rc2}）")
                 return f"【{g['name']}】❌ 登录凭证已失效（{rc2}），请发送「米游社 登录」重新登录"
             else:
+                record_outcome(role, False, f"签到失败：{j2.get('message', rc2)}")
                 lines.append(f"❌ {label} 签到失败：{j2.get('message', rc2)}")
 
             if index < len(role_list) - 1:
@@ -817,22 +912,35 @@ class MihoyoSigninPlugin(Star):
                     if not accounts:
                         continue
                     all_lines = []
+                    outcomes = []
                     for ai, acc in enumerate(accounts):
                         lines = []
                         for index, biz in enumerate(enabled):
                             try:
-                                lines.append(await self._sign_one(acc, biz))
+                                lines.append(await self._sign_one(acc, biz, outcomes))
                             except Exception as e:
+                                outcomes.append({
+                                    "game": GAMES[biz]["name"],
+                                    "uid": "",
+                                    "nickname": "",
+                                    "bbs_uid": acc.get("bbs_uid") or "",
+                                    "success": False,
+                                    "detail": f"执行出错：{e}",
+                                })
                                 lines.append(f"【{GAMES[biz]['name']}】❌ 出错：{e}")
                             if index < len(enabled) - 1:
                                 await asyncio.sleep(1.2)  # 轻微限速，防风控
                         tag = ""
                         if len(accounts) > 1:
-                            tag = f"📎 账号{ai + 1}（{acc.get('nickname', acc.get('bbs_uid', '?'))}）\n"
+                            nickname = acc.get("nickname", acc.get("bbs_uid", "?"))
+                            tag = f"📎 米游社账号{ai + 1}：{nickname}（UID {acc.get('bbs_uid', '?')}）\n"
                         all_lines.append(tag + "\n".join(lines))
                     user["last_auto_sign_date"] = today
                     if self.config.get("push_result", True) and user.get("umo"):
-                        await self._send(user["umo"], "🕐 每日自动签到结果\n" + "\n".join(all_lines))
+                        await self._send(
+                            user["umo"],
+                            _format_auto_sign_report(all_lines, outcomes),
+                        )
                 except Exception as e:
                     logger.error(f"自动签到失败 user={sender}: {e}")
             await self.store.save()
