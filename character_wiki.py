@@ -14,9 +14,6 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 
 WIDTH = 1080
-PAGE_SIZE = 20
-PAGE_COLUMNS = 5
-PAGE_ROWS = 4
 SIGNATURE = "DESIGNED BY FIREFLY"
 
 ELEMENT_COLORS = {
@@ -868,16 +865,20 @@ class CharacterWiki:
     def render_index(self, game: str, page: int = 1) -> Path:
         gold = "#d8c194"
         characters = list(reversed(self.characters(game)))
-        pages = max(1, math.ceil(len(characters) / PAGE_SIZE))
-        page = min(max(1, page), pages)
-        page_characters = characters[(page - 1) * PAGE_SIZE: page * PAGE_SIZE]
+        page_characters = characters
         cache = self._cache_path(
-            f"index:{game}:{page}:{self.data_version}:{self.render_version}:{len(characters)}"
+            f"index:{game}:{self.data_version}:{self.render_version}:{len(characters)}"
         )
         if cache.exists():
             return cache
 
-        height = 1550
+        columns = 6
+        cell_width = 150
+        cell_gap_x = 14
+        cell_height = 198
+        row_gap = 14
+        rows = max(1, math.ceil(len(page_characters) / columns))
+        height = max(760, 258 + rows * (cell_height + row_gap) + 90)
         image = Image.new("RGBA", (WIDTH, height), _hex_rgb("#171411"))
         featured = page_characters[0] if page_characters else characters[0]
         art_path = self.asset_dir / str(featured.get("background") or "")
@@ -907,19 +908,15 @@ class CharacterWiki:
             fill=_hex_rgb("#ffffff", 122),
         )
         draw.text(
-            (846, 144),
-            f"{page:02d} / {pages:02d}",
-            font=self._font(22, 600),
+            (770, 144),
+            f"{len(characters)} 位角色 · 单页总览",
+            font=self._font(18, 600),
             fill=_hex_rgb(gold),
         )
 
-        grid_top = 426
-        cell_width = 178
-        cell_gap_x = 16
-        row_gap = 18
-        cell_height = 238
+        grid_top = 250
         for index, char in enumerate(page_characters):
-            row, column = divmod(index, PAGE_COLUMNS)
+            row, column = divmod(index, columns)
             left = 54 + column * (cell_width + cell_gap_x)
             top = grid_top + row * (cell_height + row_gap)
             draw.rounded_rectangle(
@@ -929,28 +926,28 @@ class CharacterWiki:
                 outline=_hex_rgb("#fffaf0", 120),
                 width=1,
             )
-            self._draw_avatar(image, char, (left + 10, top + 10, left + 168, top + 168), 10)
+            self._draw_avatar(image, char, (left + 8, top + 8, left + 142, top + 142), 10)
             draw = ImageDraw.Draw(image)
             element_color = ELEMENT_COLORS.get(str(char.get("element") or ""), gold)
-            draw.ellipse((left + 12, top + 12, left + 54, top + 54), fill=_hex_rgb(element_color, 218))
+            draw.ellipse((left + 9, top + 9, left + 43, top + 43), fill=_hex_rgb(element_color, 218))
             element = str(char.get("element") or "")
             draw.text(
-                (left + 25, top + 22),
+                (left + 19, top + 17),
                 ELEMENT_NAMES.get(element, element[:1] or "?"),
-                font=self._font(14, 700),
+                font=self._font(12, 700),
                 fill="#ffffff",
             )
             draw.text(
-                (left + 89, top + 186),
+                (left + 75, top + 154),
                 char["name"],
-                font=self._font(18 if len(char["name"]) <= 6 else 15, 700),
+                font=self._font(15 if len(char["name"]) <= 6 else 12, 700),
                 fill="#3d3428",
                 anchor="ma",
             )
             draw.text(
-                (left + 89, top + 213),
+                (left + 75, top + 178),
                 "★" * int(char.get("star") or 0),
-                font=self._font(12, 500),
+                font=self._font(10, 500),
                 fill=_hex_rgb("#b68b35"),
                 anchor="ma",
             )
