@@ -70,6 +70,8 @@ AstrBot 米游社每日签到插件：支持 **原神 / 崩坏：星穹铁道 / 
 
 详情图优先借用云崽 [miao-plugin](https://github.com/yoimiya-kokomi/miao-plugin) 的开源图鉴版式，通过 AstrBot 文转图渲染；服务不可用时自动回退到内置 Pillow 渲染。崩坏学园2图鉴数据与图片借用 [bh2-plugin](https://github.com/l52312516-cell/bh2-plugin) 和 [Honkai-Academy-2-Illustrated-Guide](https://github.com/l52312516-cell/Honkai-Academy-2-Illustrated-Guide)。来源和 MIT 许可证记录在 `wiki_assets/NOTICE.txt`。
 
+`米游社 角色` 也已改为图片输出：原神/星铁显示角色图鉴列表或详情，绝区零显示账号角色头像卡，崩坏学园2显示对应角色图鉴。
+
 图鉴底部标注 **DESIGNED BY FIREFLY**。角色头像与游戏资料版权归米哈游所有，仅供学习交流使用。
 
 ## 战绩查询

@@ -114,6 +114,7 @@ class CharacterWiki:
         self.data_version = f"{self.data.get('updated_at')}:{self.data_path.stat().st_mtime_ns}"
         self.render_version = str(Path(__file__).stat().st_mtime_ns)
         self.games = self.data.get("games", {})
+        self.games.setdefault("zzz", {"name": "绝区零", "characters": []})
         self.font_path = self._find_font()
 
     def _find_font(self) -> str:
@@ -322,7 +323,7 @@ class CharacterWiki:
         )
 
     def _draw_avatar(self, image, char: dict, box: tuple[int, int, int, int], radius: int) -> None:
-        icon_path = self.asset_dir / str(char.get("icon") or "")
+        icon_path = Path(char.get("_icon_path") or (self.asset_dir / str(char.get("icon") or "")))
         if not icon_path.exists():
             return
         icon = Image.open(icon_path).convert("RGBA")
@@ -332,6 +333,76 @@ class CharacterWiki:
         layer = Image.new("RGBA", icon.size, (0, 0, 0, 0))
         layer.paste(icon, (0, 0), mask)
         image.alpha_composite(layer, (box[0], box[1]))
+
+    def render_roster(
+        self,
+        game: str,
+        title: str,
+        characters: list[dict],
+        icon_paths: list[Path],
+    ) -> Path:
+        rows = max(1, math.ceil(min(len(characters), 20) / 5))
+        height = max(720, 250 + rows * 256 + 120)
+        image, draw = self._new_canvas(height, ELEMENT_COLORS.get("虚数", "#d6bd88"))
+        draw.text((62, 64), self.game_title(game), font=self._font(18, 600), fill=_hex_rgb("#d8c194"))
+        draw.text((60, 100), title, font=self._font(58, 700), fill="#fffaf0")
+        draw.text(
+            (64, 180),
+            f"{len(characters)} 位角色 · ACCOUNT ROSTER",
+            font=self._font(13, 500),
+            fill=_hex_rgb("#ffffff", 112),
+        )
+        grid_top = 250
+        cell_width = 178
+        cell_gap = 16
+        cell_height = 238
+        for index, char in enumerate(characters[:20]):
+            row, column = divmod(index, 5)
+            left = 54 + column * (cell_width + cell_gap)
+            top = grid_top + row * (cell_height + 18)
+            draw.rounded_rectangle(
+                (left, top, left + cell_width, top + cell_height),
+                14,
+                fill=_hex_rgb("#e9e3d6", 242),
+                outline=_hex_rgb("#fffaf0", 120),
+                width=1,
+            )
+            icon_char = dict(char)
+            if index < len(icon_paths):
+                icon_char["_icon_path"] = str(icon_paths[index])
+            self._draw_avatar(image, icon_char, (left + 10, top + 10, left + 168, top + 168), 10)
+            draw = ImageDraw.Draw(image)
+            draw.text(
+                (left + 89, top + 186),
+                str(char.get("name") or "未知角色"),
+                font=self._font(18 if len(str(char.get("name") or "")) <= 6 else 15, 700),
+                fill="#3d3428",
+                anchor="ma",
+            )
+            level = char.get("level")
+            rank = char.get("rank")
+            detail = []
+            if level is not None:
+                detail.append(f"Lv.{level}")
+            if rank is not None:
+                detail.append(f"{rank}命")
+            draw.text(
+                (left + 89, top + 213),
+                " · ".join(detail) or "★" * int(char.get("star") or 0),
+                font=self._font(12, 500),
+                fill=_hex_rgb("#9b7429"),
+                anchor="ma",
+            )
+        self._draw_footer(draw, height, game)
+        cache = self._cache_path(
+            f"roster:{game}:{self.render_version}:"
+            + hashlib.md5(
+                "|".join(str(item.get("id") or item.get("name")) for item in characters).encode()
+            ).hexdigest()
+        )
+        image.convert("RGB").save(cache, "PNG", optimize=True)
+        self._clean_cache()
+        return cache
 
     def _detail_background(self, char: dict, color: str, height: int) -> Image.Image:
         image = Image.new("RGBA", (WIDTH, height), _hex_rgb(_mix(color, "#171513", 0.84)))

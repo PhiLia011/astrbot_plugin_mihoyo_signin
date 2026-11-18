@@ -1545,6 +1545,19 @@ class MihoyoSigninPlugin(Star):
         game, explicit_game, page, query = self.character_wiki.parse_command_args(
             event.message_str
         )
+        async for result in self._send_wiki_image(
+            event, game, explicit_game, page, query
+        ):
+            yield result
+
+    async def _send_wiki_image(
+        self,
+        event: AstrMessageEvent,
+        game: str,
+        explicit_game: bool,
+        page: int,
+        query: str,
+    ):
         try:
             if not query:
                 image_path = (
@@ -1571,6 +1584,98 @@ class MihoyoSigninPlugin(Star):
 
         yield event.chain_result([Comp.Image.fromFileSystem(str(image_path))])
         event.stop_event()
+
+    async def _fetch_owned_characters(
+        self,
+        event: AstrMessageEvent,
+        game_biz: str,
+        role_uid: str,
+    ):
+        sender = event.get_sender_id()
+        account = self._active_account(sender)
+        if not account:
+            return None, "你还没有绑定米游社账号哦~ 请先发送「米游社 登录」"
+        game = record_game_from_biz(game_biz)
+        if not game:
+            return None, f"{GAMES[game_biz]['name']}暂时没有开放角色图鉴接口"
+        role, err = await self._get_record_role(account, game_biz, role_uid)
+        if not role:
+            return None, f"❌ {err}"
+        request = RecordRequest(
+            game,
+            "characters",
+            str(role.get("game_uid") or ""),
+            role.get("region") or "",
+        )
+        data, message = await self._fetch_record(
+            account,
+            request,
+            sender,
+            event.unified_msg_origin,
+            {"game_biz": game_biz, "action": "characters", "stage": "final"},
+        )
+        await self.store.save()
+        if message:
+            return None, message
+        return get_character_list(game, data), None
+
+    async def _render_owned_roster(
+        self,
+        event: AstrMessageEvent,
+        game: str,
+        characters: list[dict],
+        query: str,
+    ):
+        if query:
+            matches = find_characters(characters, query)
+            if not matches:
+                return None
+            characters = matches
+        icon_paths = []
+        cache_dir = self.character_wiki.cache_dir / "roster_icons"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+            for item in characters[:20]:
+                char_id = str(item.get("id") or item.get("avatar_id") or "")
+                url = (
+                    item.get("role_square_url")
+                    or item.get("icon")
+                    or item.get("avatar")
+                    or ""
+                )
+                if not url and game == "zzz" and char_id:
+                    url = (
+                        "https://act-webstatic.mihoyo.com/game_record/zzzv2/"
+                        f"role_square_avatar/role_square_avatar_{char_id}.png"
+                    )
+                target = cache_dir / f"{game}_{char_id or len(icon_paths)}.img"
+                if url and not target.exists():
+                    try:
+                        response = await client.get(str(url))
+                        if response.status_code == 200:
+                            target.write_bytes(response.content)
+                    except Exception as e:
+                        logger.warning(f"下载角色头像失败 {char_id}: {e}")
+                icon_paths.append(target)
+        cards = [
+            {
+                "name": item.get("name")
+                or item.get("name_mi18n")
+                or item.get("id")
+                or "未知角色",
+                "level": item.get("level"),
+                "rank": item.get("rank", item.get("actived_constellation_num")),
+                "star": item.get("rarity") or item.get("star") or 0,
+            }
+            for item in characters[:20]
+        ]
+        game_name = self.character_wiki.game_title(game)
+        return self.character_wiki.render_roster(
+            game,
+            f"{game_name} · 我的角色",
+            cards,
+            icon_paths,
+        )
 
     async def _render_wiki_detail(self, event: AstrMessageEvent, char: dict):
         """优先使用 AstrBot HTML 渲染云崽版式，失败时回退到 Pillow。"""
@@ -1613,6 +1718,42 @@ class MihoyoSigninPlugin(Star):
     @mihoyo.command("角色", priority=10)
     async def record_characters(self, event: AstrMessageEvent):
         '''查询角色列表或角色详情'''
+        game_biz, role_uid, args = self._parse_record_args(event.message_str, "角色")
+        game = record_game_from_biz(game_biz)
+        query = " ".join(args).strip()
+        if self.character_wiki and game_biz == "bh2_cn":
+            async for result in self._send_wiki_image(
+                event, "bh2", True, 1, query
+            ):
+                yield result
+            return
+        if self.character_wiki and game == "zzz":
+            characters, error = await self._fetch_owned_characters(
+                event, game_biz, role_uid
+            )
+            if error:
+                yield event.plain_result(error)
+                event.stop_event()
+                return
+            image_path = await self._render_owned_roster(
+                event, game, characters or [], query
+            )
+            if not image_path:
+                yield event.plain_result(f"没有找到角色「{query}」")
+            else:
+                yield event.chain_result([Comp.Image.fromFileSystem(str(image_path))])
+            event.stop_event()
+            return
+        if self.character_wiki and game in ("gs", "sr") and not role_uid:
+            async for result in self._send_wiki_image(
+                event,
+                game,
+                True,
+                1,
+                query,
+            ):
+                yield result
+            return
         async for result in self._handle_record_command(event, "角色", "characters"):
             yield result
 
