@@ -1682,6 +1682,25 @@ class MihoyoSigninPlugin(Star):
         async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
             for item in characters[:20]:
                 char_id = str(item.get("id") or item.get("avatar_id") or "")
+                char_name = str(
+                    item.get("name")
+                    or item.get("name_mi18n")
+                    or item.get("id")
+                    or ""
+                )
+                local_icon = None
+                if self.character_wiki and game in ("gs", "sr", "bh2"):
+                    matches = self.character_wiki.search(char_name, game)
+                    if matches:
+                        icon_path = (
+                            self.character_wiki.asset_dir
+                            / str(matches[0].get("icon") or "")
+                        )
+                        if icon_path.exists():
+                            local_icon = icon_path
+                if local_icon:
+                    icon_paths.append(local_icon)
+                    continue
                 url = (
                     item.get("role_square_url")
                     or item.get("icon")
@@ -1803,13 +1822,7 @@ class MihoyoSigninPlugin(Star):
                 return
 
         if action_name == "角色":
-            if game in ("gs", "sr", "bh2") and self.character_wiki:
-                async for result in self._send_wiki_image(
-                    event, game, True, 1, rest
-                ):
-                    yield result
-                return
-            if game == "zzz" and self.character_wiki:
+            if game in ("gs", "sr", "zzz") and self.character_wiki:
                 characters, error = await self._fetch_owned_characters(
                     event, game_biz, ""
                 )
@@ -1891,13 +1904,7 @@ class MihoyoSigninPlugin(Star):
         game_biz, role_uid, args = self._parse_record_args(event.message_str, "角色")
         game = record_game_from_biz(game_biz)
         query = " ".join(args).strip()
-        if self.character_wiki and game_biz == "bh2_cn":
-            async for result in self._send_wiki_image(
-                event, "bh2", True, 1, query
-            ):
-                yield result
-            return
-        if self.character_wiki and game == "zzz":
+        if self.character_wiki and game in ("gs", "sr", "zzz"):
             characters, error = await self._fetch_owned_characters(
                 event, game_biz, role_uid
             )
@@ -1913,16 +1920,6 @@ class MihoyoSigninPlugin(Star):
             else:
                 yield event.chain_result([Comp.Image.fromFileSystem(str(image_path))])
             event.stop_event()
-            return
-        if self.character_wiki and game in ("gs", "sr") and not role_uid:
-            async for result in self._send_wiki_image(
-                event,
-                game,
-                True,
-                1,
-                query,
-            ):
-                yield result
             return
         async for result in self._handle_record_command(event, "角色", "characters"):
             yield result
