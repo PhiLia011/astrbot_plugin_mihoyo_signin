@@ -1,0 +1,13 @@
+Character portraits and game data are based on public miHoYo game assets and the
+character metadata snapshot from the Yunzai miao-plugin project. Their copyright
+belongs to miHoYo and the respective rights holders. They are included only for
+personal learning and non-commercial use.
+
+Character metadata and several public game icons were collected from
+miao-plugin by Yoimiya-Kokomi (https://github.com/yoimiya-kokomi/miao-plugin).
+Its character-wiki layout is reused under the MIT License; the original license
+notice is included in licenses/miao-plugin-MIT.txt. A Pillow fallback remains
+available when the HTML renderer is unavailable.
+
+NotoSansSC-VF.ttf is distributed under the SIL Open Font License 1.1.
+See fonts/OFL-1.1.txt for the full license text.

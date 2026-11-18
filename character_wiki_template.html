@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=600, initial-scale=1">
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      width: 600px;
+      margin: 0;
+      padding: 0;
+      background: #171512;
+      color: #fff;
+      font-family: "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", sans-serif;
+    }
+    .container {
+      position: relative;
+      width: 600px;
+      overflow: hidden;
+      background: #191715;
+    }
+    .basic {
+      position: relative;
+      height: 640px;
+      overflow: hidden;
+      background: #171512;
+    }
+    .main-pic {
+      position: absolute;
+      inset: 0;
+      background-image: url("{{ background }}");
+      background-size: cover;
+      background-position: center 22%;
+      background-repeat: no-repeat;
+    }
+    .main-pic::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(90deg, rgba(12,11,10,.92) 0%, rgba(12,11,10,.70) 31%, rgba(12,11,10,.08) 67%, rgba(12,11,10,.24) 100%),
+        linear-gradient(0deg, #191715 0%, rgba(25,23,21,.92) 12%, rgba(25,23,21,0) 46%);
+    }
+    .detail {
+      position: absolute;
+      z-index: 3;
+      top: 26px;
+      right: 22px;
+      width: 326px;
+      text-align: right;
+      text-shadow: 0 2px 5px rgba(0,0,0,.9);
+    }
+    .game-tag {
+      color: #d3bc8e;
+      font-size: 12px;
+      letter-spacing: 1px;
+      margin-bottom: 8px;
+    }
+    .char-name {
+      font-size: 45px;
+      line-height: 1.08;
+      font-weight: 700;
+      color: #fffaf0;
+    }
+    .char-title {
+      margin-top: 7px;
+      color: #d3bc8e;
+      font-size: 18px;
+    }
+    .char-desc {
+      margin-top: 13px;
+      color: #e6dfd3;
+      font-size: 13px;
+      line-height: 1.7;
+      min-height: 43px;
+    }
+    .char-meta {
+      margin-top: 15px;
+      display: grid;
+      gap: 8px;
+    }
+    .cont {
+      overflow: hidden;
+      border-radius: 9px;
+      background: rgba(24,22,20,.77);
+      border: 1px solid rgba(255,255,255,.13);
+      box-shadow: 0 2px 7px rgba(0,0,0,.24);
+    }
+    .char-attr {
+      padding: 7px 12px;
+      text-align: left;
+    }
+    .char-attr li {
+      list-style: none;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      min-height: 27px;
+      margin: 0;
+      padding: 0 3px;
+      font-size: 13px;
+      border-bottom: 1px solid rgba(255,255,255,.07);
+    }
+    .char-attr li:last-child { border-bottom: 0; }
+    .char-attr strong {
+      color: #d3bc8e;
+      font-weight: 400;
+    }
+    .char-attr span {
+      max-width: 190px;
+      color: #fff;
+      text-align: right;
+      overflow-wrap: anywhere;
+    }
+    .wiki-cont {
+      position: relative;
+      z-index: 4;
+      padding: 0 12px 12px;
+      margin-top: 0;
+    }
+    .section-title {
+      height: 40px;
+      line-height: 40px;
+      padding: 0 16px;
+      color: #d3bc8e;
+      font-size: 15px;
+      background: rgba(0,0,0,.34);
+      border-bottom: 1px solid rgba(255,255,255,.08);
+    }
+    .section-sub {
+      color: #958e83;
+      font-size: 10px;
+      margin-left: 7px;
+      letter-spacing: .7px;
+    }
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      min-height: 72px;
+    }
+    .stat-item {
+      padding: 12px 11px 10px;
+      border-right: 1px solid rgba(255,255,255,.08);
+    }
+    .stat-item:last-child { border-right: 0; }
+    .stat-label {
+      color: #aaa296;
+      font-size: 11px;
+      margin-bottom: 5px;
+    }
+    .stat-value {
+      color: #fffaf0;
+      font-size: 17px;
+      font-weight: 700;
+    }
+    .char-cons {
+      position: absolute;
+      z-index: 4;
+      left: 15px;
+      right: 15px;
+      bottom: 15px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      padding: 9px 9px 7px;
+      border-radius: 10px;
+      background: rgba(15,14,13,.72);
+      border: 1px solid rgba(211,188,142,.30);
+      box-shadow: 0 3px 12px rgba(0,0,0,.38);
+    }
+    .cons-head {
+      width: 65px;
+      flex: none;
+      padding: 7px 0 7px 5px;
+      color: #d3bc8e;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .cons-head small {
+      display: block;
+      margin-top: 4px;
+      color: rgba(255,255,255,.48);
+      font-size: 8px;
+      font-weight: 400;
+      letter-spacing: .4px;
+    }
+    .cons-item {
+      width: 65px;
+      text-align: center;
+    }
+    .talent-icon {
+      width: 54px;
+      height: 54px;
+      margin: 0 auto;
+      padding: 4px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(70,63,52,.86) 0%, rgba(15,14,13,.94) 72%);
+      border: 1px solid #d3bc8e;
+      box-shadow: 0 0 0 3px rgba(0,0,0,.28);
+    }
+    .talent-icon.off {
+      filter: grayscale(100%);
+      opacity: .38;
+      border-color: rgba(211,188,142,.46);
+    }
+    .talent-icon img {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+    .cons-num {
+      margin-top: 2px;
+      color: #d3bc8e;
+      font-size: 10px;
+      line-height: 14px;
+      text-shadow: 0 1px 2px #000;
+    }
+    .skill-section { margin-bottom: 9px; }
+    .skill-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0 20px;
+      padding: 4px 13px 8px;
+    }
+    .skill-item {
+      min-width: 0;
+      padding: 10px 0 11px;
+      border-bottom: 1px solid rgba(255,255,255,.09);
+    }
+    .skill-item:nth-last-child(-n+2) { border-bottom: 0; }
+    .skill-head {
+      display: flex;
+      align-items: baseline;
+      gap: 9px;
+      min-width: 0;
+    }
+    .skill-type {
+      flex: none;
+      color: #d3bc8e;
+      font-size: 11px;
+    }
+    .skill-name {
+      min-width: 0;
+      color: #fff;
+      font-size: 14px;
+      line-height: 1.35;
+      font-weight: 600;
+      overflow-wrap: anywhere;
+    }
+    .skill-desc {
+      margin-top: 7px;
+      color: #b8b1a7;
+      font-size: 11px;
+      line-height: 1.62;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      overflow-wrap: anywhere;
+    }
+    .material-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      padding: 12px 14px 14px;
+    }
+    .material-item {
+      padding: 6px 10px;
+      border-radius: 6px;
+      color: #e4ded4;
+      font-size: 11px;
+      background: rgba(211,188,142,.08);
+      border: 1px solid rgba(211,188,142,.24);
+    }
+    .footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 13px 16px 4px;
+      color: rgba(255,255,255,.42);
+      font-size: 9px;
+      letter-spacing: .6px;
+    }
+    .footer .signature { color: #d3bc8e; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="basic">
+      <div class="main-pic"></div>
+      <div class="detail">
+        <div class="game-tag">{{ game_name }} · CHARACTER ARCHIVE</div>
+        <div class="char-name">{{ char.name }}</div>
+        <div class="char-title">{{ char.title }}</div>
+        <div class="char-desc">{{ char.desc }}</div>
+        <div class="char-meta">
+          <div class="cont">
+            <ul class="char-attr">
+              {% for item in facts %}
+              <li><strong>{{ item.label }}</strong><span>{{ item.value }}</span></li>
+              {% endfor %}
+            </ul>
+          </div>
+        </div>
+      </div>
+      <div class="char-cons">
+        <div class="cons-head">{{ "命之座" if char.game == "gs" else "星魂" }}<small>CONSTELLATION</small></div>
+        {% for item in constellations %}
+        <div class="cons-item">
+          <div class="talent-icon{% if not item.lit %} off{% endif %}">
+            <img src="{{ item.icon }}" alt="">
+          </div>
+          <div class="cons-num">{{ item.label }}</div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="wiki-cont">
+      <div class="cont skill-section">
+        <div class="section-title">技能概览<span class="section-sub">TALENTS</span></div>
+        <div class="skill-grid">
+          {% for skill in skills %}
+          <div class="skill-item">
+            <div class="skill-head">
+              <span class="skill-type">{{ skill.type }}</span>
+              <span class="skill-name">{{ skill.name }}</span>
+            </div>
+            <div class="skill-desc">{{ skill.desc }}</div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="cont">
+        <div class="section-title">满级基础属性<span class="section-sub">MAX LEVEL</span></div>
+        <div class="stat-grid">
+          {% for item in stats %}
+          <div class="stat-item">
+            <div class="stat-label">{{ item.label }}</div>
+            <div class="stat-value">{{ item.value }}</div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+
+      {% if materials %}
+      <div class="cont" style="margin-top:9px">
+        <div class="section-title">养成素材</div>
+        <div class="material-list">
+          {% for item in materials %}
+          <div class="material-item">{{ item }}</div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+
+      <div class="footer">
+        <span class="signature">DESIGNED BY FIREFLY</span>
+        <span>UI inspired by Miao-Plugin · MIT</span>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

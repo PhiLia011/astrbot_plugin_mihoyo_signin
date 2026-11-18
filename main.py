@@ -320,6 +320,22 @@ class MihoyoSigninPlugin(Star):
         self._sign_lock = asyncio.Lock()
         self._device_id = self._load_device_id()
         self._apply_act_id_override()
+        self.character_wiki = None
+        self._load_character_wiki()
+
+    def _load_character_wiki(self):
+        """图鉴依赖 Pillow；单独加载，避免图片组件异常影响签到。"""
+        try:
+            try:
+                from .character_wiki import CharacterWiki
+            except ImportError:
+                from character_wiki import CharacterWiki
+            self.character_wiki = CharacterWiki(
+                os.path.dirname(os.path.abspath(__file__)),
+                self.data_dir,
+            )
+        except Exception as e:
+            logger.warning(f"角色图鉴加载失败: {e}")
 
     def _migrate_legacy_files(self):
         """旧版本数据迁移：插件目录 mihoyo_signin/ -> data/plugin_data 新位置"""
@@ -1277,6 +1293,8 @@ class MihoyoSigninPlugin(Star):
             "· 米游社 签到 [游戏] —— 指定游戏签到（原神/崩铁/崩坏3/绝区零/崩坏2/未定）\n"
             "· 米游社 查询 [游戏] —— 查询本月签到状态\n"
             "· 米游社 资料 [游戏] —— 账号等级、统计与探索度\n"
+            "· 米游社 图鉴 [原神/星铁] [角色名] —— 离线角色图鉴\n"
+            "· 米游社 图鉴 原神 第2页 —— 浏览角色列表\n"
             "· 米游社 角色 [游戏] [角色名] —— 角色列表或角色面板\n"
             "· 米游社 装备 <角色名> —— 武器与圣遗物/遗器\n"
             "· 米游社 武器 <角色名> / 圣遗物 <角色名>\n"
@@ -1518,10 +1536,78 @@ class MihoyoSigninPlugin(Star):
         yield event.plain_result(text)
         event.stop_event()
 
+    async def _handle_wiki_command(self, event: AstrMessageEvent):
+        if not self.character_wiki:
+            yield event.plain_result("角色图鉴加载失败，请检查 Pillow 依赖是否已安装。")
+            event.stop_event()
+            return
+
+        game, explicit_game, page, query = self.character_wiki.parse_command_args(
+            event.message_str
+        )
+        try:
+            if not query:
+                image_path = (
+                    self.character_wiki.render_index(game, page)
+                    if explicit_game or page > 1
+                    else self.character_wiki.render_home()
+                )
+            else:
+                matches = self.character_wiki.search(query, game if explicit_game else None)
+                if not matches:
+                    yield event.plain_result(
+                        f"没有找到角色「{query}」。可发送「米游社 图鉴 原神」"
+                        "或「米游社 图鉴 星铁」浏览全部角色。"
+                    )
+                    event.stop_event()
+                    return
+                char = matches[0]
+                image_path = await self._render_wiki_detail(event, char)
+        except Exception as e:
+            logger.error(f"生成角色图鉴失败: {e}")
+            yield event.plain_result(f"角色图鉴生成失败：{e}")
+            event.stop_event()
+            return
+
+        yield event.chain_result([Comp.Image.fromFileSystem(str(image_path))])
+        event.stop_event()
+
+    async def _render_wiki_detail(self, event: AstrMessageEvent, char: dict):
+        """优先使用 AstrBot HTML 渲染云崽版式，失败时回退到 Pillow。"""
+        try:
+            template, data = self.character_wiki.detail_html_payload(char)
+            rendered = await self.html_render(
+                template,
+                data,
+                return_url=False,
+                options={"full_page": True, "type": "png", "quality": 90},
+                umo=getattr(event, "unified_msg_origin", None),
+            )
+            if rendered and os.path.exists(str(rendered)):
+                return rendered
+        except Exception as e:
+            logger.warning(f"角色图鉴 HTML 渲染失败，使用本地渲染: {e}")
+        return self.character_wiki.render_detail(char)
+
     @mihoyo.command("资料", alias={"战绩"}, priority=10)
     async def record_profile(self, event: AstrMessageEvent):
         '''查询游戏账号资料'''
         async for result in self._handle_record_command(event, "资料", "profile"):
+            yield result
+
+    @mihoyo.command("图鉴", alias={"角色图鉴"}, priority=10)
+    async def character_wiki_cmd(self, event: AstrMessageEvent):
+        '''查询原神/星铁离线角色图鉴'''
+        async for result in self._handle_wiki_command(event):
+            yield result
+
+    @filter.regex(
+        r"^/?(?:米游社|mys)\s*(.+?)(?:角色)?图鉴(?:\s+.*)?$",
+        priority=10,
+    )
+    async def character_wiki_direct(self, event: AstrMessageEvent):
+        '''以“米游社 胡桃图鉴”的格式查询角色'''
+        async for result in self._handle_wiki_command(event):
             yield result
 
     @mihoyo.command("角色", priority=10)
