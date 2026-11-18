@@ -115,6 +115,8 @@ class CharacterWiki:
         self.render_version = str(Path(__file__).stat().st_mtime_ns)
         self.games = self.data.get("games", {})
         self.games.setdefault("zzz", {"name": "绝区零", "characters": []})
+        self.games.setdefault("bh3", {"name": "崩坏3", "characters": []})
+        self.games.setdefault("nxx", {"name": "未定事件簿", "characters": []})
         self.font_path = self._find_font()
 
     def _find_font(self) -> str:
@@ -398,6 +400,49 @@ class CharacterWiki:
             f"roster:{game}:{self.render_version}:"
             + hashlib.md5(
                 "|".join(str(item.get("id") or item.get("name")) for item in characters).encode()
+            ).hexdigest()
+        )
+        image.convert("RGB").save(cache, "PNG", optimize=True)
+        self._clean_cache()
+        return cache
+
+    def render_text_card(self, game: str, title: str, text: str) -> Path:
+        body_font = self._font(22, 400)
+        probe = Image.new("RGB", (WIDTH, 200), "black")
+        probe_draw = ImageDraw.Draw(probe)
+        lines = self._wrap(probe_draw, text or "暂无数据", body_font, 930, 80)
+        height = max(720, 290 + len(lines) * 36 + 130)
+        characters = self.characters(game)
+        if characters:
+            image = self._detail_background(
+                dict(characters[-1], game=game),
+                ELEMENT_COLORS.get("虚数", "#d6bd88"),
+                height,
+            )
+            shade = Image.new("RGBA", image.size, (8, 8, 9, 96))
+            image.alpha_composite(shade)
+        else:
+            image, _ = self._new_canvas(height, "#93e5ed")
+        draw = ImageDraw.Draw(image)
+        gold = "#d8c194"
+        draw.rounded_rectangle(
+            (24, 24, WIDTH - 24, height - 24),
+            16,
+            outline=_hex_rgb(gold, 66),
+            width=2,
+        )
+        draw.text((56, 58), self.game_title(game), font=self._font(16, 600), fill=_hex_rgb(gold))
+        draw.text((54, 98), title, font=self._font(46, 700), fill="#fffaf0")
+        draw.line((58, 174, WIDTH - 58, 174), fill=_hex_rgb(gold, 60))
+        y = 204
+        for line in lines:
+            draw.text((58, y), line, font=body_font, fill=_hex_rgb("#e8e2d7"))
+            y += 36
+        self._draw_footer(draw, height, game)
+        cache = self._cache_path(
+            "text:"
+            + hashlib.md5(
+                f"{self.render_version}:{game}:{title}:{text}".encode("utf-8")
             ).hexdigest()
         )
         image.convert("RGB").save(cache, "PNG", optimize=True)

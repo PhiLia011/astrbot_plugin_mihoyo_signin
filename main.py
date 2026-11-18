@@ -1286,6 +1286,12 @@ class MihoyoSigninPlugin(Star):
             "2. Cookie 绑定：发送「米游社 绑定 <cookie>」\n"
             "   （浏览器登录 user.mihoyo.com 后 F12 → Console 输入 document.cookie 复制）\n"
             "——————————————\n"
+            "📌 快捷前缀：\n"
+            "· # 原神   · * 星铁   · % 绝区零\n"
+            "· ! 崩坏3  · ^ 崩坏学园2\n"
+            "· 未定事件簿需使用「未定」开头\n"
+            "示例：#角色 胡桃、*体力、%角色、^角色 布洛妮娅、未定 体力\n"
+            "——————————————\n"
             "📌 常用指令：\n"
             "· 签到 —— 一键签到当前账号的全部游戏\n"
             "· 米游社 登录 —— 扫码登录并绑定账号\n"
@@ -1514,15 +1520,37 @@ class MihoyoSigninPlugin(Star):
         event.stop_event()
 
     async def _handle_record_command(self, event: AstrMessageEvent, command: str, action: str):
+        game_biz, role_uid, args = self._parse_record_args(event.message_str, command)
+        async for result in self._handle_record_action(
+            event, game_biz, role_uid, args, command, action
+        ):
+            yield result
+
+    async def _handle_record_action(
+        self,
+        event: AstrMessageEvent,
+        game_biz: str,
+        role_uid: str,
+        args: list,
+        command: str,
+        action: str,
+    ):
         sender = event.get_sender_id()
         account = self._active_account(sender)
         if not account:
-            yield event.plain_result(
-                "你还没有绑定米游社账号哦~ 请先发送「米游社 登录」"
-            )
+            message = "你还没有绑定米游社账号哦~ 请先发送「米游社 登录」"
+            game = self._wiki_game_from_biz(game_biz)
+            if self.character_wiki and game:
+                image_path = self.character_wiki.render_text_card(
+                    game,
+                    f"{GAMES[game_biz]['name']} · {command}",
+                    message,
+                )
+                yield event.chain_result([Comp.Image.fromFileSystem(str(image_path))])
+            else:
+                yield event.plain_result(message)
             event.stop_event()
             return
-        game_biz, role_uid, args = self._parse_record_args(event.message_str, command)
         text = await self._run_record_query(
             sender,
             event.unified_msg_origin,
@@ -1533,8 +1561,25 @@ class MihoyoSigninPlugin(Star):
             args,
         )
         await self.store.save()
-        yield event.plain_result(text)
+        game = self._wiki_game_from_biz(game_biz)
+        if self.character_wiki and game:
+            title = f"{GAMES[game_biz]['name']} · {command}"
+            image_path = self.character_wiki.render_text_card(game, title, text)
+            yield event.chain_result([Comp.Image.fromFileSystem(str(image_path))])
+        else:
+            yield event.plain_result(text)
         event.stop_event()
+
+    @staticmethod
+    def _wiki_game_from_biz(game_biz: str) -> str:
+        return {
+            "hk4e_cn": "gs",
+            "hkrpg_cn": "sr",
+            "nap_cn": "zzz",
+            "bh3_cn": "bh3",
+            "bh2_cn": "bh2",
+            "nxx_cn": "nxx",
+        }.get(game_biz, "")
 
     async def _handle_wiki_command(self, event: AstrMessageEvent):
         if not self.character_wiki:
@@ -1713,6 +1758,131 @@ class MihoyoSigninPlugin(Star):
     async def character_wiki_direct(self, event: AstrMessageEvent):
         '''以“米游社 胡桃图鉴”的格式查询角色'''
         async for result in self._handle_wiki_command(event):
+            yield result
+
+    @filter.regex(r"^\s*[#*%!^]\s*\S+", priority=8)
+    async def prefixed_game_command(self, event: AstrMessageEvent):
+        '''使用游戏符号前缀查询角色、体力、深渊和战绩'''
+        text = event.message_str.strip()
+        prefix, body = text[0], text[1:].strip()
+        game_biz = {
+            "#": "hk4e_cn",
+            "*": "hkrpg_cn",
+            "%": "nap_cn",
+            "!": "bh3_cn",
+            "^": "bh2_cn",
+        }.get(prefix)
+        if not game_biz or not body:
+            return
+        game = self._wiki_game_from_biz(game_biz)
+        parts = body.split(maxsplit=1)
+        action_name = parts[0]
+        rest = parts[1].strip() if len(parts) > 1 else ""
+
+        if action_name in ("图鉴", "角色图鉴"):
+            if game in ("gs", "sr", "bh2") and self.character_wiki:
+                async for result in self._send_wiki_image(
+                    event, game, True, 1, rest
+                ):
+                    yield result
+                return
+            if game == "zzz" and self.character_wiki:
+                characters, error = await self._fetch_owned_characters(
+                    event, game_biz, ""
+                )
+                if error:
+                    yield event.plain_result(error)
+                    event.stop_event()
+                    return
+                image_path = await self._render_owned_roster(
+                    event, game, characters or [], rest
+                )
+                if image_path:
+                    yield event.chain_result([Comp.Image.fromFileSystem(str(image_path))])
+                event.stop_event()
+                return
+
+        if action_name == "角色":
+            if game in ("gs", "sr", "bh2") and self.character_wiki:
+                async for result in self._send_wiki_image(
+                    event, game, True, 1, rest
+                ):
+                    yield result
+                return
+            if game == "zzz" and self.character_wiki:
+                characters, error = await self._fetch_owned_characters(
+                    event, game_biz, ""
+                )
+                if error:
+                    yield event.plain_result(error)
+                    event.stop_event()
+                    return
+                image_path = await self._render_owned_roster(
+                    event, game, characters or [], rest
+                )
+                if image_path:
+                    yield event.chain_result([Comp.Image.fromFileSystem(str(image_path))])
+                event.stop_event()
+                return
+
+        action_map = {
+            "资料": ("资料", "profile"),
+            "战绩": ("战绩", "profile"),
+            "体力": ("体力", "daily_note"),
+            "树脂": ("体力", "daily_note"),
+            "开拓力": ("体力", "daily_note"),
+            "电量": ("体力", "daily_note"),
+            "深渊": ("深渊", "abyss"),
+            "混沌": ("深渊", "abyss"),
+            "周期挑战": ("深渊", "abyss"),
+            "式舆": ("深渊", "abyss"),
+            "武器": ("武器", "weapon"),
+            "圣遗物": ("圣遗物", "artifacts"),
+            "遗器": ("圣遗物", "artifacts"),
+            "装备": ("装备", "equipment"),
+            "邦布": ("邦布", "buddy"),
+            "角色列表": ("角色", "characters"),
+        }
+        mapped = action_map.get(action_name)
+        if not mapped:
+            return
+        command, action = mapped
+        args = rest.split() if rest else []
+        async for result in self._handle_record_action(
+            event, game_biz, "", args, command, action
+        ):
+            yield result
+
+    @filter.regex(r"^\s*未定\s*\S+", priority=8)
+    async def themis_game_command(self, event: AstrMessageEvent):
+        '''未定事件簿使用游戏名作为前缀'''
+        body = event.message_str.strip()[2:].strip()
+        parts = body.split(maxsplit=1)
+        action_name = parts[0]
+        rest = parts[1].strip() if len(parts) > 1 else ""
+        if action_name in ("角色", "角色图鉴", "图鉴", "角色列表"):
+            command, action = "角色", "characters"
+        else:
+            mapped = {
+                "资料": ("资料", "profile"),
+                "战绩": ("战绩", "profile"),
+                "体力": ("体力", "daily_note"),
+                "深渊": ("深渊", "abyss"),
+                "武器": ("武器", "weapon"),
+                "圣遗物": ("圣遗物", "artifacts"),
+                "装备": ("装备", "equipment"),
+            }.get(action_name)
+            if not mapped:
+                return
+            command, action = mapped
+        async for result in self._handle_record_action(
+            event,
+            "nxx_cn",
+            "",
+            rest.split() if rest else [],
+            command,
+            action,
+        ):
             yield result
 
     @mihoyo.command("角色", priority=10)
