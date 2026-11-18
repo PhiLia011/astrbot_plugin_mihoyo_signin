@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "version": "2026.08.07",
+  "generatedAt": "2026-08-07T18:04:01.140Z",
+  "catalog": "data/catalog.json",
+  "resourceRoot": "resources",
+  "entries": 224,
+  "catalogSha256": "35f90ef949cbb8c0d484b25b509934b78f8f95acd423110aa3b65ecb68ba9d3d"
+}

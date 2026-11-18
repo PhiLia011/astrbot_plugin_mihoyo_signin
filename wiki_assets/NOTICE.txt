@@ -9,5 +9,9 @@ Its character-wiki layout is reused under the MIT License; the original license
 notice is included in licenses/miao-plugin-MIT.txt. A Pillow fallback remains
 available when the HTML renderer is unavailable.
 
+Honkai Impact 2 character catalog and images are reused from bh2-plugin and
+Honkai-Academy-2-Illustrated-Guide by l52312516-cell. Their MIT license notices
+are included in licenses/bh2-plugin-MIT.txt and licenses/bh2-guide-MIT.txt.
+
 NotoSansSC-VF.ttf is distributed under the SIL Open Font License 1.1.
 See fonts/OFL-1.1.txt for the full license text.

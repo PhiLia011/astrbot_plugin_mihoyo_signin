@@ -288,7 +288,7 @@
 <body>
   <div class="container">
     <div class="basic">
-      <div class="main-pic"></div>
+      <div class="main-pic" style="background-image:url('{{ background }}');background-size:{{ background_size }};background-position:{{ background_position }}"></div>
       <div class="detail">
         <div class="game-tag">{{ game_name }} · CHARACTER ARCHIVE</div>
         <div class="char-name">{{ char.name }}</div>
@@ -304,6 +304,7 @@
           </div>
         </div>
       </div>
+      {% if constellations %}
       <div class="char-cons">
         <div class="cons-head">{{ "命之座" if char.game == "gs" else "星魂" }}<small>CONSTELLATION</small></div>
         {% for item in constellations %}
@@ -315,11 +316,12 @@
         </div>
         {% endfor %}
       </div>
+      {% endif %}
     </div>
 
     <div class="wiki-cont">
       <div class="cont skill-section">
-        <div class="section-title">技能概览<span class="section-sub">TALENTS</span></div>
+        <div class="section-title">{{ "人物档案" if char.game == "bh2" else "技能概览" }}<span class="section-sub">{{ "ARCHIVE" if char.game == "bh2" else "TALENTS" }}</span></div>
         <div class="skill-grid">
           {% for skill in skills %}
           <div class="skill-item">
@@ -333,6 +335,7 @@
         </div>
       </div>
 
+      {% if stats %}
       <div class="cont">
         <div class="section-title">满级基础属性<span class="section-sub">MAX LEVEL</span></div>
         <div class="stat-grid">
@@ -344,6 +347,7 @@
           {% endfor %}
         </div>
       </div>
+      {% endif %}
 
       {% if materials %}
       <div class="cont" style="margin-top:9px">
@@ -358,7 +362,7 @@
 
       <div class="footer">
         <span class="signature">DESIGNED BY FIREFLY</span>
-        <span>UI inspired by Miao-Plugin · MIT</span>
+        <span>{{ source_label }}</span>
       </div>
     </div>
   </div>

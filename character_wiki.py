@@ -162,7 +162,8 @@ class CharacterWiki:
             text = (text[:page_match.start()] + text[page_match.end():]).strip()
 
         explicit_game = bool(re.search(
-            r"原神|genshin|\bys\b|星铁|崩铁|星穹铁道|starrail|\bsr\b",
+            r"原神|genshin|\bys\b|星铁|崩铁|星穹铁道|starrail|\bsr\b|"
+            r"崩坏学园2|崩坏2|崩2|\bbh2\b|\bbb\b|\bb2\b",
             text,
             re.I,
         ))
@@ -182,6 +183,12 @@ class CharacterWiki:
             "崩坏：星穹铁道": "sr",
             "starrail": "sr",
             "sr": "sr",
+            "崩坏学园2": "bh2",
+            "崩坏2": "bh2",
+            "崩2": "bh2",
+            "bh2": "bh2",
+            "bb": "bh2",
+            "b2": "bh2",
         }
         for token in sorted(aliases, key=len, reverse=True):
             position = text.lower().find(token.lower())
@@ -202,7 +209,7 @@ class CharacterWiki:
         if not query:
             return []
         wanted = self._normalize(query)
-        games = [game] if game else ["gs", "sr"]
+        games = [game] if game else ["gs", "sr", "bh2"]
         exact = []
         partial = []
         for game_key in games:
@@ -385,6 +392,8 @@ class CharacterWiki:
 
     def _stat_items(self, char: dict) -> list[tuple[str, str]]:
         game = char["game"]
+        if game == "bh2":
+            return []
         base = char.get("base") or {}
         element = str(char.get("element") or "")
         element_label = ELEMENT_NAMES.get(element, element)
@@ -430,35 +439,44 @@ class CharacterWiki:
         game = char.get("game", "gs")
         element = str(char.get("element") or "")
         element_label = ELEMENT_NAMES.get(element, element)
-        facts = [
-            {"label": "所属", "value": char.get("allegiance") or "未公开"},
-            {"label": "生日", "value": char.get("birthday") or "未公开"},
-            {
-                "label": "属性" if game == "sr" else "命之座",
-                "value": char.get("astro") or element_label,
-            },
-            {"label": "中文 CV", "value": char.get("cncv") or "未公开"},
-            {"label": "日文 CV", "value": char.get("jpcv") or "未公开"},
-        ]
+        if game == "bh2":
+            facts = [
+                {"label": "所属", "value": "崩坏学园2"},
+                {"label": "资料", "value": "萌娘百科 / Fandom"},
+            ]
+        else:
+            facts = [
+                {"label": "所属", "value": char.get("allegiance") or "未公开"},
+                {"label": "生日", "value": char.get("birthday") or "未公开"},
+                {
+                    "label": "属性" if game == "sr" else "命之座",
+                    "value": char.get("astro") or element_label,
+                },
+                {"label": "中文 CV", "value": char.get("cncv") or "未公开"},
+                {"label": "日文 CV", "value": char.get("jpcv") or "未公开"},
+            ]
 
         icons = char.get("constellation_icons") or []
         constellations = []
-        for number in range(7):
-            icon_path = self.asset_dir / "ui" / "cons0.webp"
-            if number and number <= len(icons) and icons[number - 1]:
-                icon_path = self.asset_dir / icons[number - 1]
-            constellations.append(
-                {
-                    "label": f"{number}命",
-                    "lit": number > 0 and bool(icon_path.exists()),
-                    "icon": self._data_uri(icon_path),
-                }
-            )
+        if game in ("gs", "sr"):
+            for number in range(7):
+                icon_path = self.asset_dir / "ui" / "cons0.webp"
+                if number and number <= len(icons) and icons[number - 1]:
+                    icon_path = self.asset_dir / icons[number - 1]
+                constellations.append(
+                    {
+                        "label": f"{number}命",
+                        "lit": number > 0 and bool(icon_path.exists()),
+                        "icon": self._data_uri(icon_path),
+                    }
+                )
 
         background_path = self.asset_dir / str(char.get("background") or "")
         template = (self.plugin_dir / "character_wiki_template.html").read_text("utf-8")
         return template, {
             "background": self._data_uri(background_path),
+            "background_size": char.get("background_size") or "cover",
+            "background_position": char.get("background_position") or "center 22%",
             "char": char,
             "game_name": self.game_title(game),
             "facts": facts,
@@ -469,7 +487,36 @@ class CharacterWiki:
             ],
             "skills": char.get("skills") or [],
             "materials": char.get("materials") or [],
+            "source_label": (
+                "UI reused from bh2-plugin · MIT"
+                if game == "bh2"
+                else "UI reused from Miao-Plugin · MIT"
+            ),
         }
+
+    def _render_bh2_fallback(self, char: dict, cache: Path) -> Path:
+        height = 1400
+        image = self._detail_background(char, "#93e5ed", height)
+        draw = ImageDraw.Draw(image)
+        gold = "#d8c194"
+        draw.rounded_rectangle((22, 22, WIDTH - 22, height - 22), 18, outline=_hex_rgb(gold, 74), width=2)
+        draw.text((52, 62), "崩坏学园2 · CHARACTER ARCHIVE", font=self._font(15, 600), fill=_hex_rgb(gold))
+        draw.text((48, 110), char["name"], font=self._font(60, 700), fill="#fffaf0")
+        self._draw_text(
+            draw,
+            (52, 230),
+            char.get("desc") or "该角色的详细资料暂未收录。",
+            23,
+            "#e1dbcf",
+            400,
+            520,
+            8,
+            12,
+        )
+        draw.text((52, 1260), "资料：萌娘百科 / Fandom", font=self._font(16, 500), fill=_hex_rgb(gold))
+        self._draw_footer(draw, height, "bh2")
+        image.convert("RGB").save(cache, "PNG", optimize=True)
+        return cache
 
     def render_detail(self, char: dict) -> Path:
         game = char["game"]
@@ -482,6 +529,8 @@ class CharacterWiki:
         )
         if cache.exists():
             return cache
+        if game == "bh2":
+            return self._render_bh2_fallback(char, cache)
 
         height = 1660
         image = self._detail_background(char, element_color, height)
