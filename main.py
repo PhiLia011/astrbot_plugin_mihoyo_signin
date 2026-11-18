@@ -1837,6 +1837,16 @@ class MihoyoSigninPlugin(Star):
                     yield event.chain_result([Comp.Image.fromFileSystem(str(image_path))])
                 event.stop_event()
                 return
+            async for result in self._handle_record_action(
+                event,
+                game_biz,
+                "",
+                rest.split() if rest else [],
+                "角色",
+                "characters",
+            ):
+                yield result
+            return
 
         action_map = {
             "资料": ("资料", "profile"),
